@@ -1,5 +1,4 @@
-# nexus-terminal
-# NEXUS Terminal 🔍
+# nexus-terminal# NEXUS Terminal 🔍
 
 Un terminale avanzato per **analisi forense**, **cybersecurity** e uso quotidiano, scritto interamente in **C++17**.
 
