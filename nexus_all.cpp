@@ -2328,6 +2328,763 @@ void cmdSysInfo(const std::vector<std::string>&) {
     std::cout<<"\n";
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CMD: carve — file carving avanzato
+// ═══════════════════════════════════════════════════════════════
+void cmdCarve(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: carve <file> [--out <dir>]\n"
+                  << "  Estrae file embedded tramite magic bytes signature\n" << Color::RESET;
+        return;
+    }
+    std::string path = args[1];
+    std::string outDir = ".";
+    for (size_t i = 2; i < args.size(); i++)
+        if (args[i] == "--out" && i+1 < args.size()) outDir = args[++i];
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { std::cout << Color::RED << "  File non trovato: " << path << Color::RESET << "\n"; return; }
+
+    f.seekg(0, std::ios::end);
+    size_t fsize = f.tellg(); f.seekg(0);
+    std::vector<uint8_t> data(fsize);
+    f.read((char*)data.data(), fsize);
+
+    std::cout << Color::CYAN << "\n  FILE CARVING: " << path
+              << Color::DIM << " (" << humanSize(fsize) << ")\n" << Color::RESET;
+    std::cout << Color::DIM << "  Output: " << outDir << "\n";
+    std::cout << "  " << std::string(60,'-') << "\n" << Color::RESET;
+
+    struct CarveSig {
+        std::vector<uint8_t> header;
+        std::vector<uint8_t> footer;
+        std::string ext;
+        size_t maxSize;
+    };
+
+    std::vector<CarveSig> sigs = {
+        {{0xFF,0xD8,0xFF}, {0xFF,0xD9}, ".jpg", 10*1024*1024},
+        {{0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A}, {0x49,0x45,0x4E,0x44,0xAE,0x42,0x60,0x82}, ".png", 10*1024*1024},
+        {{0x47,0x49,0x46,0x38}, {0x00,0x3B}, ".gif", 5*1024*1024},
+        {{0x25,0x50,0x44,0x46}, {0x25,0x25,0x45,0x4F,0x46}, ".pdf", 50*1024*1024},
+        {{0x50,0x4B,0x03,0x04}, {0x50,0x4B,0x05,0x06}, ".zip", 100*1024*1024},
+        {{0x52,0x61,0x72,0x21,0x1A,0x07}, {}, ".rar", 100*1024*1024},
+        {{0x7F,0x45,0x4C,0x46}, {}, ".elf", 50*1024*1024},
+        {{0x4D,0x5A}, {}, ".exe", 50*1024*1024},
+        {{0x52,0x49,0x46,0x46}, {}, ".wav", 50*1024*1024},
+        {{0x1F,0x8B,0x08}, {}, ".gz", 100*1024*1024},
+        {{0x53,0x51,0x4C,0x69,0x74,0x65}, {}, ".db", 100*1024*1024},
+    };
+
+    mkdir(outDir.c_str(), 0755);
+    int found = 0;
+
+    for (auto& sig : sigs) {
+        for (size_t i = 0; i + sig.header.size() < fsize; i++) {
+            // Cerca header
+            bool match = true;
+            for (size_t j = 0; j < sig.header.size(); j++)
+                if (data[i+j] != sig.header[j]) { match=false; break; }
+            if (!match) continue;
+
+            // Trova fine
+            size_t end = std::min(fsize, i + sig.maxSize);
+            if (!sig.footer.empty()) {
+                for (size_t k = i + sig.header.size(); k + sig.footer.size() < fsize && k < i + sig.maxSize; k++) {
+                    bool fm = true;
+                    for (size_t j = 0; j < sig.footer.size(); j++)
+                        if (data[k+j] != sig.footer[j]) { fm=false; break; }
+                    if (fm) { end = k + sig.footer.size(); break; }
+                }
+            }
+
+            // Salva file estratto
+            std::string outPath = outDir + "/carved_" + std::to_string(found) + "_0x" +
+                [&]{ std::ostringstream o; o<<std::hex<<i; return o.str(); }() + sig.ext;
+            std::ofstream out(outPath, std::ios::binary);
+            if (out) {
+                out.write((char*)data.data()+i, end-i);
+                found++;
+                std::cout << Color::GREEN << "  [" << std::setw(3) << found << "] "
+                          << Color::WHITE << sig.ext << "  offset=0x" << std::hex << i
+                          << "  size=" << std::dec << humanSize(end-i)
+                          << Color::DIM << "  -> " << outPath << Color::RESET << "\n";
+            }
+            i = end;
+        }
+    }
+
+    if (found == 0) std::cout << Color::DIM << "  Nessun file trovato.\n" << Color::RESET;
+    else std::cout << Color::YELLOW << "\n  File estratti: " << found << " in " << outDir << Color::RESET << "\n";
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: memory — analisi dump RAM
+// ═══════════════════════════════════════════════════════════════
+void cmdMemory(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: memory <dump.mem> [--strings] [--ips] [--urls] [--emails] [--hashes]\n"
+                  << "     memory live   (info RAM sistema corrente)\n" << Color::RESET;
+        return;
+    }
+
+    if (toLower(args[1]) == "live") {
+        std::cout << Color::CYAN << "\n  RAM SISTEMA\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(50,'-') << "\n" << Color::RESET;
+#ifdef __APPLE__
+        FILE* p = popen("vm_stat 2>/dev/null", "r");
+        if (p) { char buf[512]; while(fgets(buf,sizeof(buf),p)) std::cout<<"  "<<buf; pclose(p); }
+        p = popen("sysctl hw.memsize 2>/dev/null", "r");
+        if (p) { char buf[128]={0}; fgets(buf,sizeof(buf),p); pclose(p);
+            long bytes=0; sscanf(buf,"hw.memsize: %ld",&bytes);
+            std::cout<<Color::YELLOW<<"  Totale RAM: "<<Color::WHITE<<humanSize(bytes)<<Color::RESET<<"\n"; }
+#else
+        FILE* p = popen("free -h 2>/dev/null", "r");
+        if (p) { char buf[256]; while(fgets(buf,sizeof(buf),p)) std::cout<<"  "<<buf; pclose(p); }
+#endif
+        std::cout << "\n"; return;
+    }
+
+    std::string path = args[1];
+    bool doStrings=false, doIps=false, doUrls=false, doEmails=false, doHashes=false;
+    for (size_t i=2;i<args.size();i++) {
+        if(args[i]=="--strings") doStrings=true;
+        if(args[i]=="--ips")     doIps=true;
+        if(args[i]=="--urls")    doUrls=true;
+        if(args[i]=="--emails")  doEmails=true;
+        if(args[i]=="--hashes")  doHashes=true;
+        if(args[i]=="--all")     doStrings=doIps=doUrls=doEmails=doHashes=true;
+    }
+    if (!doStrings&&!doIps&&!doUrls&&!doEmails&&!doHashes) doIps=doUrls=doEmails=true;
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { std::cout << Color::RED << "  File non trovato: " << path << Color::RESET << "\n\n"; return; }
+
+    f.seekg(0, std::ios::end);
+    size_t fsize = f.tellg(); f.seekg(0);
+
+    std::cout << Color::CYAN << "\n  MEMORY ANALYSIS: " << path
+              << Color::DIM << " (" << humanSize(fsize) << ")\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+
+    // Analisi in blocchi per file grandi
+    const size_t CHUNK = 4*1024*1024; // 4MB chunks
+    std::string cur;
+    std::set<std::string> ips, urls, emails, hashes;
+
+    auto isIp = [](const std::string& s) {
+        int a,b,c,d; char extra;
+        return sscanf(s.c_str(),"%d.%d.%d.%d%c",&a,&b,&c,&d,&extra)==4 &&
+               a>=0&&a<=255&&b>=0&&b<=255&&c>=0&&c<=255&&d>=0&&d<=255;
+    };
+
+    std::vector<char> buf(CHUNK);
+    size_t totalRead = 0;
+    while (totalRead < fsize) {
+        size_t toRead = std::min(CHUNK, fsize - totalRead);
+        f.read(buf.data(), toRead);
+        size_t n = f.gcount();
+        totalRead += n;
+
+        for (size_t i = 0; i < n; i++) {
+            char c = buf[i];
+            if (c >= 32 && c <= 126) cur += c;
+            else {
+                if (cur.size() >= 6) {
+                    // IP
+                    if (doIps && cur.size()>=7 && cur.size()<=15) {
+                        if (isIp(cur)) ips.insert(cur);
+                    }
+                    // URL
+                    if (doUrls && (cur.find("http://")!=std::string::npos || cur.find("https://")!=std::string::npos))
+                        urls.insert(cur.substr(0,120));
+                    // Email
+                    if (doEmails) {
+                        auto at = cur.find('@');
+                        if (at!=std::string::npos && at>0 && at<cur.size()-3)
+                            emails.insert(cur.substr(0,80));
+                    }
+                    // Hash MD5/SHA
+                    if (doHashes && (cur.size()==32||cur.size()==40||cur.size()==64)) {
+                        bool isHex=true;
+                        for(char hc:cur) if(!isxdigit(hc)){isHex=false;break;}
+                        if(isHex) hashes.insert(cur);
+                    }
+                }
+                cur.clear();
+            }
+        }
+    }
+
+    if (doIps && !ips.empty()) {
+        std::cout << Color::YELLOW << "\n  IP TROVATI (" << ips.size() << "):\n" << Color::RESET;
+        for(auto& ip:ips) {
+            // Filtra IP privati/loopback
+            bool priv = (ip.find("192.168.")==0||ip.find("10.")==0||
+                        ip.find("172.")==0||ip.find("127.")==0||ip=="0.0.0.0");
+            std::cout << (priv?Color::DIM:Color::GREEN) << "  " << ip
+                      << (priv?" (privato/locale)":"") << Color::RESET << "\n";
+        }
+    }
+    if (doUrls && !urls.empty()) {
+        std::cout << Color::YELLOW << "\n  URL TROVATI (" << urls.size() << "):\n" << Color::RESET;
+        for(auto& u:urls) std::cout<<Color::CYAN<<"  "<<u<<Color::RESET<<"\n";
+    }
+    if (doEmails && !emails.empty()) {
+        std::cout << Color::YELLOW << "\n  EMAIL TROVATE (" << emails.size() << "):\n" << Color::RESET;
+        for(auto& e:emails) std::cout<<Color::WHITE<<"  "<<e<<Color::RESET<<"\n";
+    }
+    if (doHashes && !hashes.empty()) {
+        std::cout << Color::YELLOW << "\n  HASH TROVATI (" << hashes.size() << "):\n" << Color::RESET;
+        for(auto& h:hashes) {
+            std::string type = h.size()==32?"MD5":h.size()==40?"SHA-1":"SHA-256";
+            std::cout<<Color::GREEN<<"  ["<<type<<"] "<<h<<Color::RESET<<"\n";
+        }
+    }
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: registry — analisi registry Windows (file hive)
+// ═══════════════════════════════════════════════════════════════
+void cmdRegistry(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: registry <hivefile>\n"
+                  << "  Analizza file hive del registry Windows\n"
+                  << "  File comuni: SYSTEM, SAM, SECURITY, SOFTWARE, NTUSER.DAT\n" << Color::RESET;
+        return;
+    }
+    std::string path = args[1];
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { std::cout << Color::RED << "  File non trovato: " << path << Color::RESET << "\n\n"; return; }
+
+    // Legge magic bytes
+    uint8_t hdr[4] = {0};
+    f.read((char*)hdr, 4);
+
+    std::cout << Color::CYAN << "\n  REGISTRY ANALYSIS: " << path << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+
+    // Verifica magic "regf"
+    bool isHive = (hdr[0]=='r'&&hdr[1]=='e'&&hdr[2]=='g'&&hdr[3]=='f');
+    std::cout << Color::YELLOW << "  Tipo file   : " << Color::WHITE
+              << (isHive ? "Windows Registry Hive (regf)" : "Non riconosciuto come hive standard") << "\n" << Color::RESET;
+
+    struct stat st; stat(path.c_str(), &st);
+    std::cout << Color::YELLOW << "  Dimensione  : " << Color::WHITE << humanSize(st.st_size) << "\n";
+    std::cout << Color::YELLOW << "  Modificato  : " << Color::WHITE << timeStr(st.st_mtime) << "\n";
+
+    // Cerca stringhe interessanti nel file
+    f.seekg(0);
+    std::string cur;
+    std::set<std::string> interesting;
+    std::vector<std::string> keywords = {
+        "password","passwd","pwd","secret","token","key","admin",
+        "user","login","http","https","\\Software\\","\\System\\",
+        "RunOnce","CurrentVersion","Winlogon","SAM","SECURITY"
+    };
+    char c;
+    while (f.get(c)) {
+        if (c>=32&&c<=126) cur+=c;
+        else {
+            if (cur.size()>=6) {
+                std::string low = toLower(cur);
+                for (auto& kw : keywords)
+                    if (low.find(toLower(kw))!=std::string::npos) {
+                        interesting.insert(cur.substr(0,100));
+                        break;
+                    }
+            }
+            cur.clear();
+        }
+    }
+
+    if (!interesting.empty()) {
+        std::cout << Color::YELLOW << "\n  STRINGHE INTERESSANTI (" << interesting.size() << "):\n" << Color::RESET;
+        for (auto& s : interesting)
+            std::cout << Color::WHITE << "  " << s << Color::RESET << "\n";
+    }
+
+    std::cout << Color::DIM << "\n  Tip: per analisi completa usa 'nex install' per installare regipy o hivex\n" << Color::RESET;
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: netcap — cattura pacchetti live
+// ═══════════════════════════════════════════════════════════════
+void cmdNetcap(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: netcap <interfaccia> [--count N] [--filter <expr>] [--out file.pcap]\n"
+                  << "     netcap list   (lista interfacce disponibili)\n" << Color::RESET;
+        return;
+    }
+
+    if (toLower(args[1]) == "list") {
+        std::cout << Color::CYAN << "\n  INTERFACCE DI RETE\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(50,'-') << "\n" << Color::RESET;
+#ifdef __APPLE__
+        FILE* p = popen("networksetup -listallhardwareports 2>/dev/null", "r");
+#else
+        FILE* p = popen("ip link show 2>/dev/null", "r");
+#endif
+        if (p) { char buf[256]; while(fgets(buf,sizeof(buf),p)) std::cout<<Color::WHITE<<"  "<<buf<<Color::RESET; pclose(p); }
+        std::cout << "\n"; return;
+    }
+
+    std::string iface = args[1];
+    int count = 20;
+    std::string filter, outFile;
+    for (size_t i=2;i<args.size();i++) {
+        if(args[i]=="--count"&&i+1<args.size()) count=std::stoi(args[++i]);
+        if(args[i]=="--filter"&&i+1<args.size()) filter=args[++i];
+        if(args[i]=="--out"&&i+1<args.size()) outFile=args[++i];
+    }
+
+    std::cout << Color::CYAN << "\n  NETWORK CAPTURE: " << iface << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(55,'-') << "\n" << Color::RESET;
+
+    // Usa tcpdump se disponibile
+    std::string cmd = "tcpdump -i " + iface + " -c " + std::to_string(count) + " -nn -l";
+    if (!filter.empty()) cmd += " '" + filter + "'";
+    if (!outFile.empty()) cmd += " -w " + outFile;
+    cmd += " 2>&1";
+
+    std::cout << Color::DIM << "  $ " << cmd << "\n" << Color::RESET;
+    std::cout << Color::YELLOW << "  (Premi Ctrl+C per fermare)\n\n" << Color::RESET;
+
+    FILE* p = popen(cmd.c_str(), "r");
+    if (!p) { std::cout << Color::RED << "  Errore. tcpdump installato?\n" << Color::RESET; return; }
+    char buf[512];
+    while (fgets(buf,sizeof(buf),p)) {
+        std::string l(buf);
+        if(l.find("IP")!=std::string::npos) std::cout<<Color::GREEN;
+        else if(l.find("ARP")!=std::string::npos) std::cout<<Color::YELLOW;
+        else if(l.find("ICMP")!=std::string::npos) std::cout<<Color::CYAN;
+        else std::cout<<Color::WHITE;
+        std::cout<<"  "<<l<<Color::RESET;
+    }
+    pclose(p);
+    if (!outFile.empty())
+        std::cout<<Color::BGREEN<<"  Salvato in: "<<outFile<<Color::RESET<<"\n";
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: custody — catena di custodia digitale
+// ═══════════════════════════════════════════════════════════════
+void cmdCustody(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: custody <sottocmd> [args]\n"
+                  << "  custody new <file> <caso> <analista>   crea nuova catena\n"
+                  << "  custody add <file> <azione> <note>     aggiungi evento\n"
+                  << "  custody show <file>                    mostra catena\n"
+                  << "  custody verify <file>                  verifica integrità\n" << Color::RESET;
+        return;
+    }
+    std::string sub = toLower(args[1]);
+    std::string logDir = std::string(getenv("HOME")?getenv("HOME"):".") + "/.nexus/custody";
+    mkdir((std::string(getenv("HOME")?getenv("HOME"):".") + "/.nexus").c_str(), 0755);
+    mkdir(logDir.c_str(), 0755);
+
+    if (sub == "new" && args.size() >= 5) {
+        std::string file = args[2], caso = args[3], analista = args[4];
+        if (!fileExists(file)) { std::cout<<Color::RED<<"  File non trovato: "<<file<<Color::RESET<<"\n\n"; return; }
+
+        // Calcola hash
+        std::string md5hash  = MD5::hashFile(file);
+        std::string sha256h  = SHA256::hashFile(file);
+        struct stat st; stat(file.c_str(), &st);
+
+        // Nome log basato su caso
+        std::string logFile = logDir + "/" + caso + ".coc";
+        std::ofstream out(logFile, std::ios::app);
+        time_t now = time(nullptr);
+
+        out << "=== CHAIN OF CUSTODY ===\n";
+        out << "Caso       : " << caso << "\n";
+        out << "Analista   : " << analista << "\n";
+        out << "File       : " << file << "\n";
+        out << "Dimensione : " << st.st_size << " bytes\n";
+        out << "MD5        : " << md5hash << "\n";
+        out << "SHA-256    : " << sha256h << "\n";
+        out << "Timestamp  : " << timeStr(now) << "\n";
+        out << "Azione     : ACQUISIZIONE INIZIALE\n";
+        out << std::string(50,'-') << "\n";
+        out.close();
+
+        std::cout << Color::CYAN << "\n  CHAIN OF CUSTODY CREATA\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(50,'-') << "\n" << Color::RESET;
+        std::cout << Color::YELLOW << "  Caso     : " << Color::WHITE << caso << "\n";
+        std::cout << Color::YELLOW << "  Analista : " << Color::WHITE << analista << "\n";
+        std::cout << Color::YELLOW << "  File     : " << Color::WHITE << file << "\n";
+        std::cout << Color::YELLOW << "  MD5      : " << Color::GREEN << md5hash << "\n";
+        std::cout << Color::YELLOW << "  SHA-256  : " << Color::GREEN << sha256h << "\n";
+        std::cout << Color::YELLOW << "  Log      : " << Color::WHITE << logFile << "\n\n" << Color::RESET;
+
+    } else if (sub == "add" && args.size() >= 5) {
+        std::string caso = args[2], azione = args[3];
+        std::string note; for(size_t i=4;i<args.size();i++){if(i>4)note+=" ";note+=args[i];}
+        std::string logFile = logDir + "/" + caso + ".coc";
+        if (!fileExists(logFile)) { std::cout<<Color::RED<<"  Caso non trovato: "<<caso<<Color::RESET<<"\n\n"; return; }
+        std::ofstream out(logFile, std::ios::app);
+        time_t now = time(nullptr);
+        std::string user = getenv("USER") ? getenv("USER") : "unknown";
+        out << "Timestamp  : " << timeStr(now) << "\n";
+        out << "Utente     : " << user << "\n";
+        out << "Azione     : " << azione << "\n";
+        out << "Note       : " << note << "\n";
+        out << std::string(50,'-') << "\n";
+        out.close();
+        std::cout << Color::BGREEN << "\n  Evento aggiunto al caso " << caso << "\n\n" << Color::RESET;
+
+    } else if (sub == "show" && args.size() >= 3) {
+        std::string caso = args[2];
+        std::string logFile = logDir + "/" + caso + ".coc";
+        std::ifstream in(logFile);
+        if (!in) { std::cout<<Color::RED<<"  Caso non trovato: "<<caso<<Color::RESET<<"\n\n"; return; }
+        std::cout << Color::CYAN << "\n  CHAIN OF CUSTODY: " << caso << "\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(55,'-') << "\n" << Color::RESET;
+        std::string line;
+        while(std::getline(in,line)) {
+            if(line.find("SHA-256")!=std::string::npos||line.find("MD5")!=std::string::npos)
+                std::cout<<Color::GREEN<<"  "<<line<<Color::RESET<<"\n";
+            else if(line.find("Azione")!=std::string::npos)
+                std::cout<<Color::YELLOW<<"  "<<line<<Color::RESET<<"\n";
+            else if(line.find("===")!=std::string::npos||line[0]=='-')
+                std::cout<<Color::CYAN<<"  "<<line<<Color::RESET<<"\n";
+            else
+                std::cout<<Color::WHITE<<"  "<<line<<Color::RESET<<"\n";
+        }
+        std::cout<<"\n";
+
+    } else if (sub == "verify" && args.size() >= 4) {
+        std::string caso = args[2], file = args[3];
+        std::string logFile = logDir + "/" + caso + ".coc";
+        std::ifstream in(logFile);
+        if (!in) { std::cout<<Color::RED<<"  Caso non trovato.\n"<<Color::RESET; return; }
+
+        // Estrai hash originale dal log
+        std::string origMd5, origSha;
+        std::string line;
+        while(std::getline(in,line)) {
+            if(line.find("MD5        :")!=std::string::npos) origMd5=trim(line.substr(line.find(':')+1));
+            if(line.find("SHA-256    :")!=std::string::npos) origSha=trim(line.substr(line.find(':')+1));
+        }
+
+        std::string curMd5   = MD5::hashFile(file);
+        std::string curSha   = SHA256::hashFile(file);
+        bool md5ok  = (curMd5  == origMd5);
+        bool sha256ok = (curSha == origSha);
+
+        std::cout << Color::CYAN << "\n  VERIFICA INTEGRITA': " << file << "\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(55,'-') << "\n" << Color::RESET;
+        std::cout << Color::YELLOW << "  MD5 originale : " << Color::WHITE << origMd5 << "\n";
+        std::cout << Color::YELLOW << "  MD5 attuale   : " << (md5ok?Color::GREEN:Color::BRED) << curMd5 << Color::RESET << "\n";
+        std::cout << Color::YELLOW << "  SHA-256 orig  : " << Color::WHITE << origSha << "\n";
+        std::cout << Color::YELLOW << "  SHA-256 att.  : " << (sha256ok?Color::GREEN:Color::BRED) << curSha << Color::RESET << "\n";
+        std::cout << Color::DIM << "  " << std::string(55,'-') << "\n" << Color::RESET;
+        if (md5ok && sha256ok)
+            std::cout << Color::BGREEN << "  INTEGRITA' VERIFICATA — il file non e' stato modificato\n" << Color::RESET;
+        else
+            std::cout << Color::BRED << "  ATTENZIONE — il file risulta MODIFICATO rispetto all'acquisizione!\n" << Color::RESET;
+        std::cout << "\n";
+    } else {
+        std::cout << Color::YELLOW << "  Argomenti non validi. Digita: custody\n\n" << Color::RESET;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: hashdb — confronto con database hash noti (NSRL-like)
+// ═══════════════════════════════════════════════════════════════
+void cmdHashDb(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: hashdb <file>         controlla se hash e' noto\n"
+                  << "     hashdb add <hash> <nome>   aggiungi al database locale\n"
+                  << "     hashdb import <file.txt>   importa lista hash\n"
+                  << "     hashdb list                mostra database locale\n" << Color::RESET;
+        return;
+    }
+    std::string dbPath = std::string(getenv("HOME")?getenv("HOME"):".") + "/.nexus/hashdb.txt";
+    std::string sub = toLower(args[1]);
+
+    // Carica db locale
+    std::map<std::string,std::string> db;
+    std::ifstream dbin(dbPath);
+    std::string dline;
+    while(std::getline(dbin,dline)) {
+        auto pos = dline.find('|');
+        if(pos!=std::string::npos) db[trim(dline.substr(0,pos))]=trim(dline.substr(pos+1));
+    }
+
+    if (sub == "list") {
+        std::cout << Color::CYAN << "\n  HASH DATABASE LOCALE (" << db.size() << " entries)\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+        for(auto& p:db)
+            std::cout<<Color::GREEN<<" "<<std::left<<std::setw(34)<<p.first
+                     <<Color::WHITE<<p.second<<Color::RESET<<"\n";
+        std::cout<<"\n"; return;
+    }
+
+    if (sub == "add" && args.size() >= 4) {
+        std::string hash=toLower(args[2]), name;
+        for(size_t i=3;i<args.size();i++){if(i>3)name+=" ";name+=args[i];}
+        std::ofstream out(dbPath, std::ios::app);
+        out << hash << "|" << name << "\n";
+        db[hash]=name;
+        std::cout<<Color::BGREEN<<"  Aggiunto: "<<hash<<" -> "<<name<<Color::RESET<<"\n\n";
+        return;
+    }
+
+    if (sub == "import" && args.size() >= 3) {
+        std::ifstream imp(args[2]);
+        if(!imp){std::cout<<Color::RED<<"  File non trovato.\n"<<Color::RESET;return;}
+        std::ofstream out(dbPath, std::ios::app);
+        int count=0; std::string l;
+        while(std::getline(imp,l)){l=trim(l);if(!l.empty()){out<<l<<"\n";count++;}}
+        std::cout<<Color::BGREEN<<"  Importati "<<count<<" hash.\n\n"<<Color::RESET;
+        return;
+    }
+
+    // Controlla file
+    std::string path = args[1];
+    if (!fileExists(path)) { std::cout<<Color::RED<<"  File non trovato: "<<path<<Color::RESET<<"\n\n"; return; }
+
+    std::string md5h   = toLower(MD5::hashFile(path));
+    std::string sha256h = toLower(SHA256::hashFile(path));
+
+    std::cout << Color::CYAN << "\n  HASH DATABASE CHECK: " << path << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(55,'-') << "\n" << Color::RESET;
+    std::cout << Color::YELLOW << "  MD5    : " << Color::WHITE << md5h << "\n";
+    std::cout << Color::YELLOW << "  SHA-256: " << Color::WHITE << sha256h << "\n\n" << Color::RESET;
+
+    bool found = false;
+    for(auto& h : {md5h, sha256h}) {
+        if(db.count(h)) {
+            std::cout<<Color::BGREEN<<"  MATCH: "<<Color::WHITE<<h<<" -> "<<db[h]<<Color::RESET<<"\n";
+            found = true;
+        }
+    }
+    if (!found) {
+        std::cout << Color::DIM << "  Nessuna corrispondenza nel database locale.\n";
+        std::cout << "  Per database NSRL completo: https://www.nist.gov/itl/ssd/software-quality-group/nsrl\n" << Color::RESET;
+    }
+
+    // Hash noti di malware comuni (lista minima di esempio)
+    std::map<std::string,std::string> knownBad = {
+        {"d41d8cd98f00b204e9800998ecf8427e","Empty file (MD5)"},
+        {"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","Empty file (SHA-256)"},
+    };
+    for(auto& h:{md5h,sha256h}) {
+        if(knownBad.count(h))
+            std::cout<<Color::YELLOW<<"  Nota: "<<knownBad[h]<<Color::RESET<<"\n";
+    }
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: diskimage — analisi immagini disco .dd / .e01
+// ═══════════════════════════════════════════════════════════════
+void cmdDiskImage(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cout << Color::YELLOW << "Uso: diskimage <file.dd|file.e01> [--info] [--carve] [--hash]\n"
+                  << "     diskimage create <device> <output.dd>   crea immagine disco\n" << Color::RESET;
+        return;
+    }
+
+    if (toLower(args[1]) == "create") {
+        if (args.size() < 4) { std::cout<<Color::YELLOW<<"  Uso: diskimage create <device> <output.dd>\n"<<Color::RESET; return; }
+        std::string dev=args[2], out=args[3];
+        std::cout << Color::CYAN << "\n  DISK IMAGE: " << dev << " -> " << out << "\n" << Color::RESET;
+        std::cout << Color::YELLOW << "  Comando da eseguire:\n" << Color::RESET;
+        std::cout << Color::WHITE << "  sudo dd if=" << dev << " of=" << out << " bs=4M conv=sync,noerror status=progress\n\n" << Color::RESET;
+        std::cout << Color::DIM << "  Verifica integrità dopo:\n";
+        std::cout << "  md5sum " << out << "\n\n" << Color::RESET;
+        return;
+    }
+
+    std::string path = args[1];
+    bool doCarve=false, doInfo=true, doHash=false;
+    for(size_t i=2;i<args.size();i++) {
+        if(args[i]=="--carve") doCarve=true;
+        if(args[i]=="--hash")  doHash=true;
+        if(args[i]=="--info")  doInfo=true;
+    }
+
+    if (!fileExists(path)) { std::cout<<Color::RED<<"  File non trovato: "<<path<<Color::RESET<<"\n\n"; return; }
+
+    struct stat st; stat(path.c_str(), &st);
+
+    // Rileva formato
+    std::ifstream f(path, std::ios::binary);
+    uint8_t hdr[8]={0}; f.read((char*)hdr,8);
+    std::string fmt = "RAW/DD";
+    if(hdr[0]=='E'&&hdr[1]=='V'&&hdr[2]=='F') fmt="EnCase EWF/E01";
+    if(hdr[0]=='A'&&hdr[1]=='F'&&hdr[2]=='F') fmt="AFF (Advanced Forensic Format)";
+
+    std::cout << Color::CYAN << "\n  DISK IMAGE ANALYSIS: " << path << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+    std::cout << Color::YELLOW << "  Formato    : " << Color::WHITE << fmt << "\n";
+    std::cout << Color::YELLOW << "  Dimensione : " << Color::WHITE << humanSize(st.st_size) << "\n";
+    std::cout << Color::YELLOW << "  Modificato : " << Color::WHITE << timeStr(st.st_mtime) << "\n";
+
+    if (doHash) {
+        std::cout << Color::YELLOW << "  MD5        : " << Color::GREEN << MD5::hashFile(path) << "\n" << Color::RESET;
+        std::cout << Color::YELLOW << "  SHA-256    : " << Color::GREEN << SHA256::hashFile(path) << "\n" << Color::RESET;
+    }
+
+    // Cerca partizioni (MBR)
+    f.seekg(0);
+    std::vector<uint8_t> sector(512,0);
+    f.read((char*)sector.data(),512);
+
+    if (sector[510]==0x55 && sector[511]==0xAA) {
+        std::cout << Color::YELLOW << "\n  Tipo boot  : " << Color::WHITE << "MBR (Master Boot Record)\n" << Color::RESET;
+        std::cout << Color::YELLOW << "  Partizioni :\n" << Color::RESET;
+        for (int p=0;p<4;p++) {
+            int off = 446 + p*16;
+            uint8_t status = sector[off];
+            uint8_t type   = sector[off+4];
+            if (type == 0) continue;
+            uint32_t lbaStart, lbaSize;
+            memcpy(&lbaStart, &sector[off+8],  4);
+            memcpy(&lbaSize,  &sector[off+12], 4);
+            std::string fsType;
+            switch(type) {
+                case 0x0B: case 0x0C: fsType="FAT32"; break;
+                case 0x07: fsType="NTFS/exFAT"; break;
+                case 0x83: fsType="Linux ext2/3/4"; break;
+                case 0x82: fsType="Linux Swap"; break;
+                case 0xEE: fsType="GPT Protective"; break;
+                default: { std::ostringstream o; o<<"Type 0x"<<std::hex<<(int)type; fsType=o.str(); }
+            }
+            std::cout << Color::GREEN << "    P" << p+1 << ": " << Color::WHITE
+                      << std::left << std::setw(16) << fsType
+                      << Color::DIM << " LBA=" << lbaStart << " size=" << humanSize((uint64_t)lbaSize*512)
+                      << (status==0x80?" [BOOT]":"") << Color::RESET << "\n";
+        }
+    }
+
+    if (doCarve) {
+        std::cout << Color::YELLOW << "\n  Avvio file carving...\n" << Color::RESET;
+        std::vector<std::string> carveArgs = {"carve", path, "--out", path+"_carved"};
+        cmdCarve(carveArgs);
+    }
+
+    std::cout << Color::DIM << "\n  Tip: per analisi completa usa 'autopsy' o 'sleuthkit'\n" << Color::RESET;
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: report forense avanzato (testo strutturato)
+// ═══════════════════════════════════════════════════════════════
+void cmdForensicReport(const std::vector<std::string>& args) {
+    if (args.size() < 3) {
+        std::cout << Color::YELLOW << "Uso: freport <file> <caso> [--out report.txt] [--full]\n"
+                  << "  Genera report forense professionale strutturato\n" << Color::RESET;
+        return;
+    }
+    std::string path=args[1], caso=args[2];
+    std::string outPath=caso+"_report.txt";
+    bool full=false;
+    for(size_t i=3;i<args.size();i++){
+        if(args[i]=="--out"&&i+1<args.size()) outPath=args[++i];
+        if(args[i]=="--full") full=true;
+    }
+
+    if (!fileExists(path)) { std::cout<<Color::RED<<"  File non trovato: "<<path<<Color::RESET<<"\n\n"; return; }
+
+    struct stat st; stat(path.c_str(), &st);
+    auto pw  = getpwuid(st.st_uid);
+    time_t now = time(nullptr);
+    std::string analyst = getenv("USER") ? getenv("USER") : "N/D";
+
+    std::ofstream out(outPath);
+    if (!out) { std::cout<<Color::RED<<"  Impossibile creare file output.\n"<<Color::RESET; return; }
+
+    auto line = [&](int n=60){ out<<std::string(n,'=')<<"\n"; };
+    auto sec  = [&](const std::string& t){ out<<"\n"<<std::string(60,'-')<<"\n  "<<t<<"\n"<<std::string(60,'-')<<"\n"; };
+
+    line();
+    out << "         REPORT DI ANALISI FORENSE DIGITALE\n";
+    line();
+    out << "\n";
+    out << "  Numero caso    : " << caso << "\n";
+    out << "  Analista       : " << analyst << "\n";
+    out << "  Data analisi   : " << timeStr(now) << "\n";
+    out << "  Tool           : NEXUS Forensic Terminal v1.0\n";
+    out << "  OS             : ";
+#ifdef __APPLE__
+    out << "macOS\n";
+#else
+    out << "Linux\n";
+#endif
+
+    sec("1. IDENTIFICAZIONE EVIDENZA");
+    out << "  Percorso       : " << path << "\n";
+    out << "  Tipo           : " << detectFileType(path) << "\n";
+    out << "  Dimensione     : " << st.st_size << " bytes (" << humanSize(st.st_size) << ")\n";
+    out << "  Permessi       : " << permString(st.st_mode) << "\n";
+    out << "  Proprietario   : " << (pw?pw->pw_name:std::to_string(st.st_uid)) << " (uid=" << st.st_uid << ")\n";
+    out << "  Inode          : " << st.st_ino << "\n";
+
+    sec("2. TIMESTAMP");
+    out << "  Accesso (atime): " << timeStr(st.st_atime) << "\n";
+    out << "  Modifica (mtime): " << timeStr(st.st_mtime) << "\n";
+    out << "  Cambio (ctime) : " << timeStr(st.st_ctime) << "\n";
+
+    sec("3. HASH CRITTOGRAFICI");
+    std::string md5h   = MD5::hashFile(path);
+    std::string sha256h = SHA256::hashFile(path);
+    out << "  MD5    : " << md5h << "\n";
+    out << "  SHA-256: " << sha256h << "\n";
+    out << "\n  NOTA: conservare questi hash per verificare l'integrità futura.\n";
+
+    sec("4. ANALISI STATISTICA");
+    std::ifstream f(path, std::ios::binary);
+    size_t freq[256]={0}; size_t total=0; char c;
+    while(f.get(c)){freq[(uint8_t)c]++;total++;}
+    double entropy=0;
+    for(int i=0;i<256;i++) if(freq[i]>0){double p=(double)freq[i]/total; entropy-=p*log2(p);}
+    out << "  Entropia: " << std::fixed << std::setprecision(4) << entropy << " bit/byte\n";
+    if(entropy>7.5) out << "  Valutazione: ALTA ENTROPIA — possibilmente cifrato o compresso\n";
+    else if(entropy>4.0) out << "  Valutazione: Entropia normale\n";
+    else out << "  Valutazione: Bassa entropia — dati ridondanti\n";
+
+    if (full) {
+        sec("5. HEADER (primi 64 byte)");
+        std::ifstream f2(path, std::ios::binary);
+        uint8_t hdr[64]={0}; f2.read((char*)hdr,64);
+        size_t nr=f2.gcount();
+        out << std::hex << std::setfill('0');
+        for(size_t i=0;i<nr;i+=16){
+            out<<"  "<<std::setw(8)<<i<<"  ";
+            for(size_t j=0;j<16&&i+j<nr;j++) out<<std::setw(2)<<(int)hdr[i+j]<<" ";
+            out<<"  |  ";
+            for(size_t j=0;j<16&&i+j<nr;j++) out<<(char)(hdr[i+j]>=32&&hdr[i+j]<=126?hdr[i+j]:'.');
+            out<<"\n";
+        }
+        out<<std::dec;
+
+        sec("6. STRINGHE RILEVANTI");
+        std::ifstream f3(path, std::ios::binary);
+        std::string cur; int found=0;
+        while(f3.get(c)){
+            if(c>=32&&c<=126) cur+=c;
+            else { if(cur.size()>=8){out<<"  "<<cur<<"\n";found++;} cur.clear(); }
+        }
+        out<<"  Totale stringhe (>=8 char): "<<found<<"\n";
+    }
+
+    sec("FINE REPORT");
+    out << "  Generato il: " << timeStr(now) << "\n";
+    out << "  Da: NEXUS Forensic Terminal\n";
+    line();
+    out.close();
+
+    std::cout << Color::BGREEN << "\n  Report generato: " << Color::WHITE << outPath << Color::RESET << "\n\n";
+}
+
 // ─────────────────────────────────────────────
 //  CMD: wordgen — genera wordlist da pattern
 // ─────────────────────────────────────────────
@@ -3859,13 +4616,28 @@ void cmdHelp() {
     row("strings <file> [minlen] [pat]", "Estrai stringhe ASCII");
     row("grep <pattern> <file> [-i]",    "Cerca testo nel file");
     row("magic <file|dir>",              "Tipo tramite magic bytes");
-    row("entropy <file>",                "Analisi entropia (cifrato?)");
+    row("entropy <file>",                "Analisi entropia");
     row("binwalk <file>",                "Cerca firme embedded");
-    row("checksum <file>",               "CRC32 + Adler32 + MD5 + SHA256");
-    row("exif <file.jpg>",               "Estrai metadati EXIF");
+    row("carve <file> [--out <dir>]",    "File carving avanzato");
+    row("checksum <file>",               "CRC32+Adler32+MD5+SHA256");
+    row("exif <file.jpg>",               "Metadati EXIF");
     row("stego <file>",                  "Analisi steganografica");
-    row("diff <file1> <file2>",          "Confronto testuale file");
+    row("diff <file1> <file2>",          "Confronto testuale");
     row("compare <file1> <file2>",       "Confronto via hash");
+
+    section("FORENSICA AVANZATA");
+    row("freport <file> <caso> [--full]","Report forense professionale");
+    row("custody new <f> <caso> <anal>", "Crea catena di custodia");
+    row("custody add <caso> <azione>",   "Aggiungi evento alla catena");
+    row("custody show <caso>",           "Mostra catena di custodia");
+    row("custody verify <caso> <file>",  "Verifica integrita' evidenza");
+    row("hashdb <file>",                 "Confronta hash con database");
+    row("hashdb add <hash> <nome>",      "Aggiungi hash al database");
+    row("diskimage <file.dd|.e01>",      "Analisi immagini disco");
+    row("diskimage create <dev> <out>",  "Crea immagine disco (dd)");
+    row("memory <dump.mem> [--all]",     "Analisi dump RAM");
+    row("memory live",                   "Info RAM sistema corrente");
+    row("registry <hivefile>",           "Analisi registry Windows");
 
     section("SISTEMA & FILESYSTEM");
     row("scan <dir> [-r] [-e .ext]",     "Scansiona directory");
@@ -3920,6 +4692,8 @@ void cmdHelp() {
     row("macinfo <mac>",                 "Vendor da MAC address");
     row("urlparse <url>",                "Disseziona URL + pattern");
     row("netstat",                       "Connessioni attive (ss/netstat)");
+    row("netcap <iface> [--filter ...]", "Cattura pacchetti live");
+    row("netcap list",                   "Lista interfacce di rete");
     row("arpscan",                       "Host locali via ARP");
 
     section("GIT");
@@ -5143,6 +5917,14 @@ int main() {
             else if (cmd == "cve")       { cmdCve(tokens); }
             else if (cmd == "payload")   { cmdPayload(tokens); }
             else if (cmd == "ctf")       { cmdCtf(tokens); }
+            else if (cmd == "carve")     { cmdCarve(tokens); }
+            else if (cmd == "memory")    { cmdMemory(tokens); }
+            else if (cmd == "registry")  { cmdRegistry(tokens); }
+            else if (cmd == "netcap")    { cmdNetcap(tokens); }
+            else if (cmd == "custody")   { cmdCustody(tokens); }
+            else if (cmd == "hashdb")    { cmdHashDb(tokens); }
+            else if (cmd == "diskimage") { cmdDiskImage(tokens); }
+            else if (cmd == "freport")   { cmdForensicReport(tokens); }
             else if (cmd == "wordgen")   { cmdWordGen(tokens); }
             else if (cmd == "git")        { cmdGit(tokens); }
             else if (cmd == "freq")       { cmdFreq(tokens); }
