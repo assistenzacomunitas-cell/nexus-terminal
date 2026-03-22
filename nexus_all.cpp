@@ -5602,6 +5602,722 @@ void cmdMonitor(const std::vector<std::string>& args) {
     std::cout << Color::CYAN << "\n  Monitor terminato.\n\n" << Color::RESET;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CMD: filetree — albero visuale directory
+// ═══════════════════════════════════════════════════════════════
+void cmdFileTree(const std::vector<std::string>& args) {
+    std::string dir = (args.size()>=2) ? args[1] : ".";
+    int maxDepth = 4;
+    for(size_t i=2;i<args.size();i++) if(args[i]=="-d"&&i+1<args.size()) maxDepth=std::stoi(args[++i]);
+
+    std::cout << Color::CYAN << "\n  " << dir << "\n" << Color::RESET;
+    size_t fileCount=0, dirCount=0;
+
+    std::function<void(const std::string&, const std::string&, int)> walk =
+    [&](const std::string& path, const std::string& prefix, int depth) {
+        if (depth > maxDepth) return;
+        DIR* d = opendir(path.c_str()); if(!d) return;
+        std::vector<std::string> entries;
+        struct dirent* ent;
+        while((ent=readdir(d))!=nullptr) {
+            std::string n=ent->d_name;
+            if(n=="."||n=="..") continue;
+            entries.push_back(n);
+        }
+        closedir(d);
+        std::sort(entries.begin(),entries.end());
+
+        for(size_t i=0;i<entries.size();i++) {
+            bool last = (i==entries.size()-1);
+            std::string full = path+"/"+entries[i];
+            struct stat st; stat(full.c_str(),&st);
+            bool isDir = S_ISDIR(st.st_mode);
+
+            std::cout << Color::DIM << prefix << (last?"└── ":"├── ") << Color::RESET;
+            if(isDir) { std::cout<<Color::BCYAN<<entries[i]<<"/"<<Color::RESET; dirCount++; }
+            else {
+                // Colore per estensione
+                std::string ext; auto dot=entries[i].rfind('.'); if(dot!=std::string::npos) ext=toLower(entries[i].substr(dot));
+                std::string col = (ext==".cpp"||ext==".h"||ext==".py"||ext==".js") ? Color::GREEN :
+                                  (ext==".jpg"||ext==".png"||ext==".gif") ? Color::MAGENTA :
+                                  (ext==".pdf"||ext==".doc"||ext==".docx") ? Color::YELLOW :
+                                  (ext==".zip"||ext==".gz"||ext==".tar") ? Color::RED : Color::WHITE;
+                std::cout << col << entries[i] << Color::DIM << "  " << humanSize(st.st_size) << Color::RESET;
+                fileCount++;
+            }
+            std::cout << "\n";
+            if(isDir) walk(full, prefix+(last?"    ":"│   "), depth+1);
+        }
+    };
+    walk(dir, "", 0);
+    std::cout << Color::DIM << "\n  " << dirCount << " cartelle, " << fileCount << " file\n\n" << Color::RESET;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: duplicates — trova file duplicati via hash
+// ═══════════════════════════════════════════════════════════════
+void cmdDuplicates(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: duplicates <dir>\n"<<Color::RESET;return;}
+    std::string dir = args[1];
+    std::cout << Color::CYAN << "\n  DUPLICATI IN: " << dir << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  Calcolo hash...\n" << Color::RESET;
+
+    std::vector<FileEntry> files;
+    scanDir(dir, files, "", true);
+
+    std::map<std::string, std::vector<std::string>> byHash;
+    for(auto& fe : files) {
+        std::string h = MD5::hashFile(fe.path);
+        byHash[h].push_back(fe.path);
+    }
+
+    std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+    int groups=0; size_t wastedBytes=0;
+    for(auto& p : byHash) {
+        if(p.second.size()<2) continue;
+        groups++;
+        struct stat st; stat(p.second[0].c_str(),&st);
+        wastedBytes += st.st_size * (p.second.size()-1);
+        std::cout << Color::YELLOW << "  [MD5: " << p.first.substr(0,16) << "...] "
+                  << Color::DIM << humanSize(st.st_size) << Color::RESET << "\n";
+        for(auto& f : p.second)
+            std::cout << Color::WHITE << "    " << f << Color::RESET << "\n";
+    }
+    if(groups==0) std::cout << Color::GREEN << "  Nessun duplicato trovato.\n" << Color::RESET;
+    else std::cout << Color::YELLOW << "\n  Gruppi duplicati: " << groups
+                   << "  Spazio sprecato: " << humanSize(wastedBytes) << Color::RESET << "\n";
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: bigfiles — trova i file più grandi
+// ═══════════════════════════════════════════════════════════════
+void cmdBigFiles(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: bigfiles <dir> [n]\n"<<Color::RESET;return;}
+    std::string dir=args[1];
+    int n=(args.size()>=3)?std::stoi(args[2]):10;
+
+    std::vector<FileEntry> files;
+    scanDir(dir, files, "", true);
+    std::sort(files.begin(),files.end(),[](const FileEntry& a,const FileEntry& b){return a.size>b.size;});
+
+    std::cout << Color::CYAN << "\n  TOP " << n << " FILE PIU' GRANDI IN: " << dir << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(65,'-') << "\n" << Color::RESET;
+    for(int i=0;i<n&&i<(int)files.size();i++) {
+        int barLen = (int)((double)files[i].size/files[0].size*30);
+        std::cout << Color::YELLOW << "  " << std::setw(3) << i+1 << ". "
+                  << Color::GREEN << std::string(barLen,'#') << Color::DIM << std::string(30-barLen,'-')
+                  << Color::WHITE << "  " << std::setw(10) << humanSize(files[i].size)
+                  << "  " << files[i].path << Color::RESET << "\n";
+    }
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: timeline — analisi temporale stile Autopsy
+// ═══════════════════════════════════════════════════════════════
+void cmdTimelineAdv(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: timeline2 <dir> [--days N] [--type file|dir|all]\n"<<Color::RESET;return;}
+    std::string dir=args[1];
+    int days=30;
+    std::string typeFilter="all";
+    for(size_t i=2;i<args.size();i++){
+        if(args[i]=="--days"&&i+1<args.size()) days=std::stoi(args[++i]);
+        if(args[i]=="--type"&&i+1<args.size()) typeFilter=args[++i];
+    }
+
+    std::vector<FileEntry> files;
+    scanDir(dir, files, "", true);
+    std::sort(files.begin(),files.end(),[](const FileEntry& a,const FileEntry& b){return a.mtime>b.mtime;});
+
+    time_t now=time(nullptr);
+    time_t cutoff=now-(days*86400);
+
+    std::cout << Color::CYAN << "\n  TIMELINE FORENSE: " << dir << Color::DIM << " (ultimi " << days << " giorni)\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(70,'-') << "\n" << Color::RESET;
+
+    // Raggruppa per giorno
+    std::map<std::string,std::vector<FileEntry>> byDay;
+    for(auto& fe:files) {
+        if(fe.mtime < cutoff) continue;
+        char buf[11]; struct tm* t=localtime(&fe.mtime);
+        strftime(buf,sizeof(buf),"%Y-%m-%d",t);
+        byDay[std::string(buf)].push_back(fe);
+    }
+
+    // Timeline ASCII grafica
+    std::cout << Color::YELLOW << "  ATTIVITA' PER GIORNO:\n" << Color::RESET;
+    int maxDay=0;
+    for(auto& p:byDay) if((int)p.second.size()>maxDay) maxDay=p.second.size();
+
+    for(auto it=byDay.rbegin();it!=byDay.rend();++it) {
+        int barLen = maxDay>0?(int)((double)it->second.size()/maxDay*40):0;
+        std::string col = it->second.size()>10?Color::RED:it->second.size()>5?Color::YELLOW:Color::GREEN;
+        std::cout << Color::WHITE << "  " << it->first << " "
+                  << col << std::string(barLen,'#') << Color::DIM << std::string(40-barLen,'-')
+                  << Color::WHITE << " " << it->second.size() << " file\n" << Color::RESET;
+    }
+
+    std::cout << Color::YELLOW << "\n  FILE RECENTI:\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(70,'-') << "\n" << Color::RESET;
+    int shown=0;
+    for(auto& fe:files) {
+        if(fe.mtime<cutoff || shown>=50) break;
+        time_t diff=now-fe.mtime;
+        std::string age;
+        if(diff<3600) age=std::to_string(diff/60)+"m fa";
+        else if(diff<86400) age=std::to_string(diff/3600)+"h fa";
+        else age=std::to_string(diff/86400)+"g fa";
+
+        std::string col=diff<3600?Color::BRED:diff<86400?Color::YELLOW:Color::WHITE;
+        std::cout<<col<<"  "<<timeStr(fe.mtime)<<"  "<<Color::DIM<<std::setw(8)<<humanSize(fe.size)
+                 <<"  "<<Color::WHITE<<fe.path<<Color::RESET<<"\n";
+        shown++;
+    }
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: sslscan — analisi cipher suite TLS
+// ═══════════════════════════════════════════════════════════════
+void cmdSslScan(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: sslscan2 <host> [porta]\n"<<Color::RESET;return;}
+    std::string host=args[1];
+    std::string port=(args.size()>=3)?args[2]:"443";
+
+    std::cout << Color::CYAN << "\n  SSL/TLS SCAN: " << host << ":" << port << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+
+    // Usa openssl s_client per info base
+    std::string cmd = "openssl s_client -connect " + host + ":" + port +
+                      " -brief 2>&1 < /dev/null";
+    FILE* p = popen(cmd.c_str(),"r");
+    if(p){
+        char buf[512]; std::string out;
+        while(fgets(buf,sizeof(buf),p)) out+=buf;
+        pclose(p);
+
+        // Parse output
+        auto printLine=[&](const std::string& key, const std::string& searchKey, const std::string& col){
+            size_t pos=out.find(searchKey);
+            if(pos!=std::string::npos){
+                size_t end=out.find('\n',pos);
+                std::string val=trim(out.substr(pos,end-pos));
+                std::cout<<Color::YELLOW<<"  "<<std::left<<std::setw(20)<<key<<col<<val<<Color::RESET<<"\n";
+            }
+        };
+        printLine("Protocollo",    "Protocol  :",  Color::GREEN);
+        printLine("Cipher",        "Cipher    :",  Color::WHITE);
+        printLine("Certificato",   "Server certificate", Color::WHITE);
+        printLine("Soggetto",      "subject=",     Color::WHITE);
+        printLine("Emittente",     "issuer=",      Color::DIM);
+        printLine("Scadenza",      "notAfter=",    Color::YELLOW);
+
+        // Controlla vulnerabilità note
+        std::cout << Color::YELLOW << "\n  CHECK VULNERABILITA':\n" << Color::RESET;
+        auto chk=[&](const std::string& name, const std::string& testFlags, bool wantFail){
+            std::string c="openssl s_client -connect "+host+":"+port+" "+testFlags+" 2>&1 < /dev/null";
+            FILE* pp=popen(c.c_str(),"r"); if(!pp) return;
+            std::string o; char b[256]; while(fgets(b,sizeof(b),pp)) o+=b; pclose(pp);
+            bool connected=(o.find("CONNECTED")!=std::string::npos);
+            bool vuln=(wantFail?connected:!connected);
+            std::cout<<(vuln?Color::BRED+"  [VULN] ":Color::GREEN+"  [ OK ] ")
+                     <<Color::WHITE<<name<<Color::RESET<<"\n";
+        };
+        chk("SSLv3 (POODLE)",    "-ssl3", true);
+        chk("TLSv1.0",           "-tls1", true);
+        chk("TLSv1.1",           "-tls1_1", true);
+        chk("TLSv1.2 supportato","-tls1_2", false);
+        chk("TLSv1.3 supportato","-tls1_3", false);
+    }
+
+    // Certificato dettagliato
+    std::cout << Color::YELLOW << "\n  CERTIFICATO:\n" << Color::RESET;
+    std::string certCmd = "echo | openssl s_client -connect "+host+":"+port+" 2>/dev/null | openssl x509 -noout -text 2>&1 | head -30";
+    FILE* cp=popen(certCmd.c_str(),"r");
+    if(cp){
+        char buf[512];
+        while(fgets(buf,sizeof(buf),cp))
+            std::cout<<Color::DIM<<"  "<<buf<<Color::RESET;
+        pclose(cp);
+    }
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: dnsenum — enumerazione sottodomini
+// ═══════════════════════════════════════════════════════════════
+void cmdDnsEnum(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: dnsenum <dominio>\n"<<Color::RESET;return;}
+    std::string domain=args[1];
+    std::cout << Color::CYAN << "\n  DNS ENUMERATION: " << domain << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(60,'-') << "\n" << Color::RESET;
+
+    // Record principali
+    std::vector<std::pair<std::string,std::string>> records={
+        {"A","A"},{"AAAA","AAAA"},{"MX","MX"},{"NS","NS"},
+        {"TXT","TXT"},{"CNAME","CNAME"},{"SOA","SOA"},{"PTR","PTR"}
+    };
+    std::cout << Color::YELLOW << "  RECORD DNS:\n" << Color::RESET;
+    for(auto& r:records){
+        FILE* p=popen(("dig +short "+r.second+" "+domain+" 2>/dev/null").c_str(),"r");
+        if(!p) continue;
+        char buf[512]; std::string out;
+        while(fgets(buf,sizeof(buf),p)) out+=buf;
+        pclose(p);
+        out=trim(out);
+        if(!out.empty())
+            std::cout<<Color::YELLOW<<"  "<<std::left<<std::setw(8)<<r.first<<Color::GREEN<<out<<Color::RESET<<"\n";
+    }
+
+    // Zone transfer
+    std::cout << Color::YELLOW << "\n  ZONE TRANSFER (AXFR):\n" << Color::RESET;
+    FILE* p=popen(("dig @ns1."+domain+" "+domain+" AXFR 2>&1 | head -20").c_str(),"r");
+    if(p){char buf[256];bool found=false;
+        while(fgets(buf,sizeof(buf),p)){std::string l(buf);
+            if(l.find("Transfer failed")==std::string::npos&&l.find(";;")==std::string::npos){
+                std::cout<<Color::GREEN<<"  "<<l<<Color::RESET;found=true;}
+        }
+        pclose(p);
+        if(!found) std::cout<<Color::DIM<<"  Zone transfer non permesso (normale).\n"<<Color::RESET;
+    }
+
+    // Sottodomini comuni
+    std::cout << Color::YELLOW << "\n  SOTTODOMINI COMUNI:\n" << Color::RESET;
+    std::vector<std::string> subs={"www","mail","ftp","vpn","api","admin","dev","test",
+        "staging","beta","app","shop","portal","m","mobile","cdn","static","assets","blog","forum"};
+    int found=0;
+    for(auto& sub:subs){
+        std::string full=sub+"."+domain;
+        struct addrinfo hints{},*res=nullptr;
+        hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
+        if(getaddrinfo(full.c_str(),nullptr,&hints,&res)==0){
+            char ip[INET6_ADDRSTRLEN]={0};
+            if(res->ai_family==AF_INET)
+                inet_ntop(AF_INET,&((struct sockaddr_in*)res->ai_addr)->sin_addr,ip,sizeof(ip));
+            else
+                inet_ntop(AF_INET6,&((struct sockaddr_in6*)res->ai_addr)->sin6_addr,ip,sizeof(ip));
+            std::cout<<Color::BGREEN<<"  [+] "<<Color::WHITE<<std::left<<std::setw(30)<<full
+                     <<Color::GREEN<<ip<<Color::RESET<<"\n";
+            freeaddrinfo(res); found++;
+        }
+    }
+    if(!found) std::cout<<Color::DIM<<"  Nessun sottodominio comune trovato.\n"<<Color::RESET;
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: geoip — geolocalizzazione IP
+// ═══════════════════════════════════════════════════════════════
+void cmdGeoIpLite(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: geoip2 <ip|hostname>\n"<<Color::RESET;return;}
+    std::string target=args[1];
+
+    // Risolvi hostname in IP
+    struct addrinfo hints{},*res=nullptr;
+    hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
+    std::string ip=target;
+    if(getaddrinfo(target.c_str(),nullptr,&hints,&res)==0){
+        char buf[INET6_ADDRSTRLEN]={0};
+        if(res->ai_family==AF_INET)
+            inet_ntop(AF_INET,&((struct sockaddr_in*)res->ai_addr)->sin_addr,buf,sizeof(buf));
+        else
+            inet_ntop(AF_INET6,&((struct sockaddr_in6*)res->ai_addr)->sin6_addr,buf,sizeof(buf));
+        ip=buf; freeaddrinfo(res);
+    }
+
+    std::cout << Color::CYAN << "\n  GEOIP: " << target;
+    if(ip!=target) std::cout << " -> " << ip;
+    std::cout << "\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(55,'-') << "\n" << Color::RESET;
+
+    // Usa ipinfo.io via curl
+    std::string cmd="curl -s --max-time 5 'https://ipinfo.io/"+ip+"/json' 2>/dev/null";
+    FILE* p=popen(cmd.c_str(),"r");
+    if(p){
+        std::string out; char buf[512];
+        while(fgets(buf,sizeof(buf),p)) out+=buf;
+        pclose(p);
+
+        // Parse JSON manuale
+        auto extractJson=[&](const std::string& key)->std::string{
+            std::string search="\""+key+"\":\"";
+            size_t pos=out.find(search);
+            if(pos==std::string::npos) return "";
+            pos+=search.size();
+            size_t end=out.find('"',pos);
+            return out.substr(pos,end-pos);
+        };
+
+        auto print=[&](const std::string& label, const std::string& key, const std::string& col=Color::WHITE){
+            std::string val=extractJson(key);
+            if(!val.empty()) std::cout<<Color::YELLOW<<"  "<<std::left<<std::setw(14)<<label<<col<<val<<Color::RESET<<"\n";
+        };
+
+        print("IP",       "ip",       Color::GREEN);
+        print("Hostname", "hostname");
+        print("Citta'",   "city",     Color::CYAN);
+        print("Regione",  "region");
+        print("Paese",    "country",  Color::BYELLOW);
+        print("Posizione","loc",      Color::DIM);
+        print("ISP/Org",  "org",      Color::WHITE);
+        print("Timezone", "timezone", Color::DIM);
+
+        // Prova reverse DNS
+        char host[NI_MAXHOST]={0};
+        struct sockaddr_in sa{}; sa.sin_family=AF_INET; inet_pton(AF_INET,ip.c_str(),&sa.sin_addr);
+        if(getnameinfo((struct sockaddr*)&sa,sizeof(sa),host,sizeof(host),nullptr,0,0)==0&&strlen(host)>0)
+            std::cout<<Color::YELLOW<<"  Reverse DNS  "<<Color::DIM<<host<<Color::RESET<<"\n";
+    } else {
+        std::cout<<Color::DIM<<"  curl non disponibile. Installa curl per geolocalizzazione.\n"<<Color::RESET;
+    }
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: calc — calcolatrice con operazioni bitwise
+// ═══════════════════════════════════════════════════════════════
+void cmdCalc(const std::vector<std::string>& args) {
+    if(args.size()<2){
+        std::cout<<Color::YELLOW<<"Uso: calc <espressione>\n"
+                 <<"  Es: calc 2+2   calc 0xFF & 0x0F   calc 1024*1024   calc 2^10\n"
+                 <<"  Es: calc 255 hex   calc 1024 bin   calc 0b11111111 dec\n"<<Color::RESET;
+        return;
+    }
+
+    // Ricostruisce espressione
+    std::string expr;
+    for(size_t i=1;i<args.size();i++){if(i>1)expr+=" ";expr+=args[i];}
+
+    std::cout<<Color::CYAN<<"\n  CALC: "<<expr<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(45,'-')<<"\n"<<Color::RESET;
+
+    // Conversioni base
+    std::string last=toLower(args.back());
+    if((last=="hex"||last=="bin"||last=="oct"||last=="dec")&&args.size()>=3){
+        std::string numStr=args[args.size()-2];
+        long long num=0;
+        try{
+            if(numStr.size()>2&&numStr.substr(0,2)=="0x") num=std::stoll(numStr.substr(2),nullptr,16);
+            else if(numStr.size()>2&&numStr.substr(0,2)=="0b") num=std::stoll(numStr.substr(2),nullptr,2);
+            else num=std::stoll(numStr);
+        } catch(...){num=0;}
+
+        std::cout<<Color::YELLOW<<"  Decimale : "<<Color::WHITE<<num<<Color::RESET<<"\n";
+        std::cout<<Color::YELLOW<<"  Hex      : "<<Color::GREEN<<"0x"<<std::hex<<std::uppercase<<num<<std::dec<<Color::RESET<<"\n";
+        std::cout<<Color::YELLOW<<"  Ottale   : "<<Color::WHITE<<"0"<<std::oct<<num<<std::dec<<Color::RESET<<"\n";
+        // Binario manuale
+        std::string bin;
+        unsigned long long unum=(unsigned long long)num;
+        if(unum==0) bin="0";
+        else { while(unum>0){bin=(char)('0'+(unum&1))+bin;unum>>=1;} }
+        std::cout<<Color::YELLOW<<"  Binario  : "<<Color::WHITE<<"0b"<<bin<<Color::RESET<<"\n";
+        // Dimensioni
+        if(num>=0) {
+            std::cout<<Color::YELLOW<<"  Bytes    : "<<Color::DIM<<humanSize(num)<<Color::RESET<<"\n";
+        }
+        std::cout<<"\n"; return;
+    }
+
+    // Valuta espressione con bc
+    std::string bcExpr=expr;
+    // Sostituisce ^ con ** per bc, ** con ^
+    for(auto& pair:std::vector<std::pair<std::string,std::string>>{{"0x","0x"},{"**","^"}}){}
+    // Usa python3 come eval sicuro
+    std::string pyExpr=expr;
+    // Sostituisce operatori bitwise comuni
+    std::string cmd="python3 -c \"import sys; expr='"+pyExpr+"'; "
+                    "result=eval(expr.replace('0b','0B')); "
+                    "print(f'  Risultato : {result}'); "
+                    "print(f'  Hex       : {hex(int(result))}'); "
+                    "print(f'  Binario   : {bin(int(result))}')\" 2>&1";
+    FILE* p=popen(cmd.c_str(),"r");
+    if(p){
+        char buf[256];
+        while(fgets(buf,sizeof(buf),p)) std::cout<<Color::WHITE<<buf<<Color::RESET;
+        pclose(p);
+    }
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: note / notes — appunti di sessione
+// ═══════════════════════════════════════════════════════════════
+static std::vector<std::pair<std::string,std::string>> g_notes; // {timestamp, testo}
+
+void cmdNote(const std::vector<std::string>& args) {
+    if(args.size()<2||toLower(args[0])=="notes"){
+        if(g_notes.empty()){std::cout<<Color::DIM<<"\n  Nessun appunto. Usa: note <testo>\n\n"<<Color::RESET;return;}
+        std::cout<<Color::CYAN<<"\n  APPUNTI SESSIONE ("<<g_notes.size()<<")\n"<<Color::RESET;
+        std::cout<<Color::DIM<<"  "<<std::string(55,'-')<<"\n"<<Color::RESET;
+        for(size_t i=0;i<g_notes.size();i++)
+            std::cout<<Color::DIM<<"  ["<<std::setw(2)<<i+1<<"] "<<g_notes[i].first<<"  "
+                     <<Color::WHITE<<g_notes[i].second<<Color::RESET<<"\n";
+        std::cout<<"\n"; return;
+    }
+    if(toLower(args[1])=="clear"){g_notes.clear();std::cout<<Color::GREEN<<"  Appunti cancellati.\n\n"<<Color::RESET;return;}
+    if(toLower(args[1])=="del"&&args.size()>=3){
+        int idx=std::stoi(args[2])-1;
+        if(idx>=0&&idx<(int)g_notes.size()){g_notes.erase(g_notes.begin()+idx);std::cout<<Color::GREEN<<"  Rimosso.\n\n"<<Color::RESET;}
+        return;
+    }
+
+    std::string text;
+    for(size_t i=1;i<args.size();i++){if(i>1)text+=" ";text+=args[i];}
+    time_t now=time(nullptr);
+    char buf[20]; struct tm* t=localtime(&now); strftime(buf,sizeof(buf),"%H:%M:%S",t);
+    g_notes.push_back({std::string(buf),text});
+    std::cout<<Color::BGREEN<<"  Appunto salvato ["<<g_notes.size()<<"]\n\n"<<Color::RESET;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ALIAS — alias comandi personalizzati
+// ═══════════════════════════════════════════════════════════════
+static std::map<std::string,std::string> g_aliases;
+
+void cmdAlias(const std::vector<std::string>& args) {
+    if(args.size()<2){
+        // Mostra alias
+        if(g_aliases.empty()){std::cout<<Color::DIM<<"\n  Nessun alias. Usa: alias <nome> <comando>\n\n"<<Color::RESET;return;}
+        std::cout<<Color::CYAN<<"\n  ALIAS DEFINITI\n"<<Color::RESET;
+        std::cout<<Color::DIM<<"  "<<std::string(45,'-')<<"\n"<<Color::RESET;
+        for(auto& p:g_aliases)
+            std::cout<<Color::YELLOW<<"  "<<std::left<<std::setw(15)<<p.first
+                     <<Color::WHITE<<"= "<<p.second<<Color::RESET<<"\n";
+        std::cout<<"\n"; return;
+    }
+    if(toLower(args[1])=="del"&&args.size()>=3){
+        g_aliases.erase(args[2]);std::cout<<Color::GREEN<<"  Alias rimosso.\n\n"<<Color::RESET;return;
+    }
+    if(args.size()<3){std::cout<<Color::YELLOW<<"  Uso: alias <nome> <comando>\n\n"<<Color::RESET;return;}
+    std::string name=args[1];
+    std::string cmd; for(size_t i=2;i<args.size();i++){if(i>2)cmd+=" ";cmd+=args[i];}
+    g_aliases[name]=cmd;
+    std::cout<<Color::BGREEN<<"  Alias creato: "<<Color::WHITE<<name<<Color::YELLOW<<" = "<<cmd<<Color::RESET<<"\n\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CMD: volatility wrapper
+// ═══════════════════════════════════════════════════════════════
+void cmdVolatility(const std::vector<std::string>& args) {
+    if(args.size()<2){
+        std::cout<<Color::YELLOW<<"Uso: vol <dump.mem> [plugin]\n"
+                 <<"  Plugin comuni:\n"
+                 <<"    pslist     — lista processi\n"
+                 <<"    pstree     — albero processi\n"
+                 <<"    netscan    — connessioni di rete\n"
+                 <<"    cmdline    — argomenti linea di comando\n"
+                 <<"    filescan   — file aperti\n"
+                 <<"    dlllist    — DLL caricate\n"
+                 <<"    hashdump   — hash password\n"
+                 <<"    malfind    — cerca codice iniettato\n"
+                 <<Color::RESET; return;
+    }
+    std::string dump=args[1];
+    std::string plugin=(args.size()>=3)?args[2]:"pslist";
+
+    std::cout<<Color::CYAN<<"\n  VOLATILITY: "<<dump<<" ["<<plugin<<"]\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(55,'-')<<"\n"<<Color::RESET;
+
+    // Prova vol3 prima, poi vol2
+    FILE* test=popen("which vol3 2>/dev/null","r");
+    char tbuf[64]={0}; fgets(tbuf,sizeof(tbuf),test); pclose(test);
+    std::string volCmd;
+    if(strlen(tbuf)>2) volCmd="vol3 -f "+dump+" windows."+plugin;
+    else {
+        FILE* t2=popen("which vol2 2>/dev/null","r");
+        char t2buf[64]={0}; fgets(t2buf,sizeof(t2buf),t2); pclose(t2);
+        if(strlen(t2buf)>2) volCmd="vol2 --plugins="+plugin+" -f "+dump;
+        else {
+            std::cout<<Color::RED<<"  Volatility non trovato.\n"<<Color::RESET;
+            std::cout<<Color::DIM<<"  Installa con: nex install volatility\n\n"<<Color::RESET;
+            // Fallback: usa il nostro cmdMemory
+            std::cout<<Color::YELLOW<<"  Uso analisi interna (memory):\n"<<Color::RESET;
+            std::vector<std::string> memArgs={"memory",dump,"--all"};
+            cmdMemory(memArgs);
+            return;
+        }
+    }
+    runShellCmd(volCmd);
+}
+
+#include <termios.h>
+
+// ─────────────────────────────────────────────
+//  INPUT — readline con frecce e TAB
+// ─────────────────────────────────────────────
+static std::vector<std::string> g_inputHistory;
+static int g_histPos = -1;
+
+// Lista comandi per TAB completion
+static const std::vector<std::string> ALL_CMDS = {
+    "help","clear","exit","quit","hash","fileinfo","hexdump","strings","grep","magic",
+    "entropy","binwalk","carve","checksum","exif","stego","diff","compare",
+    "freport","custody","hashdb","diskimage","memory","registry",
+    "scan","timeline","timeline2","filehide","permcheck","report","logcheck",
+    "sysinfo","sysaudit","processes","openports","filetree","duplicates","bigfiles",
+    "decode","encode","enc","hashid","hashcrack","passcheck","randgen",
+    "xor","jwt","cipher","freq","timestamp","wordgen","calc","note","notes","alias",
+    "dns","dnsall","dnsenum","whois","ping","traceroute","portcheck","portscan",
+    "httphead","secheaders","banner","hostinfo","ssl","sslscan2","subnet","macinfo",
+    "urlparse","netstat","netcap","arpscan","geoip2","myip","speedtest","monitor",
+    "git","nex","vol",
+    "ls","cd","pwd","cat","mkdir","rm","mv","cp","touch","find","wc","head","tail",
+    "echo","env","which","chmod","df","du","uname","whoami","date","uptime",
+    "sort","uniq","cut","man","history","python3","pip","pip3","sh","run",
+    "nmap","curl","wget","openssl","ssh","docker","node","npm","hydra",
+    "hashcat","john","sqlmap","nikto","gobuster","ffuf"
+};
+
+std::string nexusReadLine(const std::string& prompt) {
+    std::cout << prompt << std::flush;
+
+    // Imposta terminal raw mode
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    newt.c_cc[VMIN] = 1;
+    newt.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+    std::string line;
+    int cursor = 0;
+    g_histPos = -1;
+    std::string savedLine;
+
+    auto redraw = [&](){
+        // Torna a inizio riga e riscrivi
+        std::cout << "\r" << prompt << line << "  ";
+        // Riposiziona cursore
+        int backSteps = (int)line.size() - cursor;
+        if(backSteps > 0) {
+            std::cout << "\033[" << backSteps << "D";
+        }
+        std::cout << std::flush;
+    };
+
+    while(true) {
+        char c;
+        if(read(STDIN_FILENO, &c, 1) != 1) break;
+
+        if(c == '\n' || c == '\r') {
+            std::cout << "\n";
+            break;
+        }
+        else if(c == 127 || c == 8) { // Backspace
+            if(cursor > 0) {
+                line.erase(cursor-1, 1);
+                cursor--;
+                redraw();
+            }
+        }
+        else if(c == '\t') { // TAB completion
+            std::string prefix = line.substr(0, cursor);
+            // Trova spazio — se è il primo token, completa comandi
+            size_t spacePos = prefix.find(' ');
+            std::vector<std::string> matches;
+            if(spacePos == std::string::npos) {
+                // Completa comando
+                for(auto& cmd : ALL_CMDS)
+                    if(cmd.substr(0, prefix.size()) == prefix) matches.push_back(cmd);
+            } else {
+                // Completa file/dir
+                std::string partial = prefix.substr(spacePos+1);
+                std::string dirPart = ".";
+                std::string filePart = partial;
+                size_t lastSlash = partial.rfind('/');
+                if(lastSlash != std::string::npos) {
+                    dirPart = partial.substr(0, lastSlash);
+                    filePart = partial.substr(lastSlash+1);
+                }
+                DIR* d = opendir(dirPart.c_str());
+                if(d) {
+                    struct dirent* ent;
+                    while((ent=readdir(d))!=nullptr) {
+                        std::string n=ent->d_name;
+                        if(n=="."||n=="..") continue;
+                        if(n.substr(0,filePart.size())==filePart)
+                            matches.push_back((dirPart=="."?"":dirPart+"/")+n);
+                    }
+                    closedir(d);
+                }
+            }
+            if(matches.size()==1) {
+                std::string completion = matches[0];
+                if(spacePos==std::string::npos) { line=completion; cursor=line.size(); }
+                else {
+                    size_t wordStart = line.rfind(' ',cursor-1)+1;
+                    line = line.substr(0,wordStart)+completion;
+                    cursor = line.size();
+                }
+                redraw();
+            } else if(matches.size()>1) {
+                std::cout << "\n";
+                for(auto& m:matches) std::cout<<"  "<<m<<"  ";
+                std::cout << "\n";
+                std::cout << prompt << line << std::flush;
+            }
+        }
+        else if(c == '\033') { // Escape sequence
+            char seq[3]={0};
+            if(read(STDIN_FILENO,&seq[0],1)!=1) continue;
+            if(read(STDIN_FILENO,&seq[1],1)!=1) continue;
+            if(seq[0]=='[') {
+                if(seq[1]=='A') { // Su — history precedente
+                    if(g_histPos==-1) { savedLine=line; g_histPos=(int)g_inputHistory.size()-1; }
+                    else if(g_histPos>0) g_histPos--;
+                    if(g_histPos>=0&&g_histPos<(int)g_inputHistory.size()) {
+                        line=g_inputHistory[g_histPos]; cursor=line.size(); redraw();
+                    }
+                } else if(seq[1]=='B') { // Giu — history successiva
+                    if(g_histPos>=0) {
+                        g_histPos++;
+                        if(g_histPos>=(int)g_inputHistory.size()) {
+                            g_histPos=-1; line=savedLine;
+                        } else { line=g_inputHistory[g_histPos]; }
+                        cursor=line.size(); redraw();
+                    }
+                } else if(seq[1]=='C') { // Destra
+                    if(cursor<(int)line.size()) { cursor++; std::cout<<"\033[1C"<<std::flush; }
+                } else if(seq[1]=='D') { // Sinistra
+                    if(cursor>0) { cursor--; std::cout<<"\033[1D"<<std::flush; }
+                } else if(seq[1]=='H' || seq[1]=='1') { // Home
+                    cursor=0; redraw();
+                } else if(seq[1]=='F' || seq[1]=='4') { // End
+                    cursor=line.size(); redraw();
+                }
+            }
+        }
+        else if(c>=32 && c<127) { // Carattere normale
+            line.insert(cursor, 1, c);
+            cursor++;
+            redraw();
+        }
+        else if(c==3) { // Ctrl+C
+            line=""; std::cout<<"\n"; break;
+        }
+        else if(c==4) { // Ctrl+D
+            if(line.empty()) { line="exit"; std::cout<<"\n"; break; }
+        }
+        else if(c==1) { // Ctrl+A — inizio riga
+            cursor=0; redraw();
+        }
+        else if(c==5) { // Ctrl+E — fine riga
+            cursor=line.size(); redraw();
+        }
+        else if(c==11) { // Ctrl+K — cancella fino a fine riga
+            line=line.substr(0,cursor); redraw();
+        }
+        else if(c==21) { // Ctrl+U — cancella tutta la riga
+            line=""; cursor=0; redraw();
+        }
+    }
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return line;
+}
+
 // ─────────────────────────────────────────────
 //  SHELL — helper generico esegui comando
 // ─────────────────────────────────────────────
@@ -5864,14 +6580,26 @@ int main() {
 
     std::string line;
     while (true) {
-        std::cout << getPrompt();
-        if (!std::getline(std::cin, line)) break;
+        line = nexusReadLine(getPrompt());
         line = trim(line);
         if (line.empty()) continue;
 
+        // Salva in history (evita duplicati consecutivi)
+        if(g_inputHistory.empty() || g_inputHistory.back() != line)
+            g_inputHistory.push_back(line);
+        g_history.push_back(line);
+
+        // Espandi alias
+        auto tokens2 = split(line);
+        if(!tokens2.empty() && g_aliases.count(tokens2[0])) {
+            std::string expanded = g_aliases[tokens2[0]];
+            for(size_t i=1;i<tokens2.size();i++) expanded += " "+tokens2[i];
+            line = expanded;
+        }
+
         auto tokens = split(line);
         std::string cmd = toLower(tokens[0]);
-        g_history.push_back(line); // salva in history
+        g_history.push_back(line);
 
         try {
             if (cmd == "exit" || cmd == "quit") {
@@ -5990,6 +6718,18 @@ int main() {
                 }
                 runShellCmd(fullcmd);
             }
+            else if (cmd == "filetree")   { cmdFileTree(tokens); }
+            else if (cmd == "duplicates") { cmdDuplicates(tokens); }
+            else if (cmd == "bigfiles")   { cmdBigFiles(tokens); }
+            else if (cmd == "timeline2")  { cmdTimelineAdv(tokens); }
+            else if (cmd == "sslscan2")   { cmdSslScan(tokens); }
+            else if (cmd == "dnsenum")    { cmdDnsEnum(tokens); }
+            else if (cmd == "geoip2")     { cmdGeoIpLite(tokens); }
+            else if (cmd == "calc")       { cmdCalc(tokens); }
+            else if (cmd == "note")       { cmdNote(tokens); }
+            else if (cmd == "notes")      { cmdNote(tokens); }
+            else if (cmd == "alias")      { cmdAlias(tokens); }
+            else if (cmd == "vol")        { cmdVolatility(tokens); }
             else if (cmd == "ls")         { cmdLs(tokens); }
             else if (cmd == "cd")         { cmdCd(tokens); }
             else if (cmd == "pwd")        { char cwd[512]; if(getcwd(cwd,sizeof(cwd))) std::cout<<Color::CYAN<<"\n  "<<cwd<<Color::RESET<<"\n\n"; }
