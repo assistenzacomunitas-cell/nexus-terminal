@@ -21,7 +21,7 @@ Un terminale avanzato per **analisi forense**, **cybersecurity** e uso quotidian
 
 ### Compilazione
 ```bash
-git clone https://github.com/nexusstartup1-create/nexus-terminal-v-1.0.git
+git clone https://github.com/assistenzacomunitas-cell/nexus-terminal.git
 cd nexus-terminal-v-1.0
 g++ -std=c++17 -O2 -o nxt nexus_all.cpp
 ```
