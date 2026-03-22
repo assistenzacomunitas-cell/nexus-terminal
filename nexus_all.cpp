@@ -6187,13 +6187,12 @@ std::string nexusReadLine(const std::string& prompt) {
     std::string savedLine;
 
     auto redraw = [&](){
-        // Torna a inizio riga e riscrivi
-        std::cout << "\r" << prompt << line << "  ";
-        // Riposiziona cursore
+        // Cancella riga corrente e riscrivi dall'inizio
+        std::cout << "\033[2K\r" << prompt << line;
+        // Riposiziona cursore se non alla fine
         int backSteps = (int)line.size() - cursor;
-        if(backSteps > 0) {
+        if(backSteps > 0)
             std::cout << "\033[" << backSteps << "D";
-        }
         std::cout << std::flush;
     };
 
