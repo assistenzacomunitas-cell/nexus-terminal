@@ -2334,58 +2334,183 @@ void cmdSysInfo(const std::vector<std::string>&) {
 void cmdWordGen(const std::vector<std::string>& args) {
     if (args.size() < 2) {
         std::cout << Color::YELLOW << "Uso: wordgen <tipo> [args]\n"
-                  << "  wordgen leet <word>       variazioni leet speak\n"
-                  << "  wordgen dates <year>      combinazioni data\n"
-                  << "  wordgen combine <w1> <w2> combinazioni due parole\n"
-                  << "  wordgen suffixes <word>   parola + suffissi comuni\n" << Color::RESET; return;
+                  << "  wordgen leet <word>            variazioni leet speak\n"
+                  << "  wordgen dates <year>           combinazioni data\n"
+                  << "  wordgen combine <w1> <w2>      combinazioni due parole\n"
+                  << "  wordgen suffixes <word>        parola + suffissi comuni\n"
+                  << "  wordgen custom <word> [opts]   wordlist custom avanzata\n"
+                  << "  wordgen mask <mask>            genera da maschera (?l?u?d?s)\n"
+                  << "  wordgen resources              dove trovare wordlist professionali\n"
+                  << "\n  Opzioni custom: --leet --upper --dates --nums --save <file>\n"
+                  << Color::RESET; return;
     }
-    std::string mode=toLower(args[1]);
+    std::string mode = toLower(args[1]);
 
-    std::cout << Color::CYAN << "\n  📝 WORDLIST GENERATOR\n" << Color::RESET;
-    std::cout << Color::DIM << "  Per uso su sistemi di propria proprietà / CTF.\n" << Color::RESET;
-    std::cout << Color::DIM << "  ─────────────────────────────────────────────\n" << Color::RESET;
+    std::cout << Color::CYAN << "\n  WORDLIST GENERATOR [" << mode << "]\n" << Color::RESET;
+    std::cout << Color::DIM << "  Per uso su sistemi di propria proprieta' o CTF.\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(50,'-') << "\n" << Color::RESET;
 
-    if (mode=="leet" && args.size()>=3) {
-        std::string word=args[2];
-        std::map<char,std::string> leet={{'a',"4"},{'e',"3"},{'i',"1"},{'o',"0"},{'s',"5"},{'t',"7"},{'g',"9"},{'b',"8"}};
+    std::vector<std::string> words;
+
+    if (mode == "leet" && args.size() >= 3) {
+        std::string word = args[2];
+        std::map<char,std::string> leet = {
+            {'a',"4"},{'e',"3"},{'i',"1"},{'o',"0"},
+            {'s',"5"},{'t',"7"},{'g',"9"},{'b',"8"},{'l',"1"}
+        };
         std::set<std::string> variants;
         variants.insert(word);
         variants.insert(toLower(word));
-        std::string upper=word; std::transform(upper.begin(),upper.end(),upper.begin(),::toupper);
+        std::string upper = word;
+        std::transform(upper.begin(),upper.end(),upper.begin(),::toupper);
         variants.insert(upper);
-        // Applica sostituzioni leet
-        std::string leetWord=word;
-        for(char& c:leetWord) { auto it=leet.find(tolower(c)); if(it!=leet.end()) c=it->second[0]; }
-        variants.insert(leetWord);
-        variants.insert(leetWord+"!");
-        variants.insert(leetWord+"123");
-        variants.insert(word+"123");
-        variants.insert(word+"!");
-        variants.insert(word+"@");
-        variants.insert(word+"2024");
-        variants.insert(word+"2025");
-        for(auto& v:variants) std::cout<<Color::GREEN<<"  "<<v<<"\n"<<Color::RESET;
-    } else if (mode=="dates" && args.size()>=3) {
-        int year=std::stoi(args[2]);
-        for(int y=year-2;y<=year+1;y++)
-            for(int m=1;m<=12;m++)
-                std::cout<<Color::GREEN<<"  "<<std::setw(4)<<std::setfill('0')<<y
-                         <<std::setw(2)<<std::setfill('0')<<m<<"\n"<<Color::RESET;
-    } else if (mode=="combine" && args.size()>=4) {
-        std::string w1=args[2], w2=args[3];
-        std::vector<std::string> sep={"","_","-",".","+","@","!","123","2024","2025"};
-        for(auto& s:sep){
-            std::cout<<Color::GREEN<<"  "<<w1<<s<<w2<<"\n";
-            std::cout<<"  "<<w2<<s<<w1<<"\n"<<Color::RESET;
+        std::string leetWord = toLower(word);
+        for (char& c : leetWord) {
+            auto it = leet.find(c);
+            if (it != leet.end()) c = it->second[0];
         }
-    } else if (mode=="suffixes" && args.size()>=3) {
-        std::string base=args[2];
-        std::vector<std::string> suf={"","1","123","1234","12345","!","@","#","*","2023","2024","2025","01","_admin","_user","_pass","_root"};
-        for(auto& s:suf) std::cout<<Color::GREEN<<"  "<<base<<s<<"\n"<<Color::RESET;
+        variants.insert(leetWord);
+        for (auto& v : std::vector<std::string>{word, leetWord, upper}) {
+            for (auto& s : std::vector<std::string>{"","!","123","1234","@","#","2024","2025","01","*"})
+                variants.insert(v+s);
+        }
+        for (auto& v : variants) words.push_back(v);
+
+    } else if (mode == "dates" && args.size() >= 3) {
+        int year = std::stoi(args[2]);
+        for (int y = year-3; y <= year+1; y++)
+            for (int m = 1; m <= 12; m++)
+                for (int d = 1; d <= 31; d+=5) {
+                    std::ostringstream oss;
+                    oss << std::setw(4) << std::setfill('0') << y
+                        << std::setw(2) << std::setfill('0') << m
+                        << std::setw(2) << std::setfill('0') << d;
+                    words.push_back(oss.str());
+                    std::ostringstream oss2;
+                    oss2 << std::setw(2)<<std::setfill('0')<<d<<"/"
+                         << std::setw(2)<<std::setfill('0')<<m<<"/"<<y;
+                    words.push_back(oss2.str());
+                }
+
+    } else if (mode == "combine" && args.size() >= 4) {
+        std::string w1 = args[2], w2 = args[3];
+        for (auto& s : std::vector<std::string>{"","_","-",".","+","@","!","123","2024","2025","#","*"}) {
+            words.push_back(w1+s+w2);
+            words.push_back(w2+s+w1);
+            words.push_back(toLower(w1)+s+toLower(w2));
+        }
+
+    } else if (mode == "suffixes" && args.size() >= 3) {
+        std::string base = args[2];
+        for (auto& s : std::vector<std::string>{
+            "","1","12","123","1234","12345","123456",
+            "!","@","#","*","!!","!@#",
+            "2020","2021","2022","2023","2024","2025",
+            "01","007","99","000",
+            "_admin","_user","_pass","_root","_test",
+            "password","pass","pwd"})
+            words.push_back(base+s);
+
+    } else if (mode == "custom" && args.size() >= 3) {
+        std::string base = args[2];
+        bool doLeet=false, doUpper=false, doDates=false, doNums=false;
+        std::string saveFile;
+        for (size_t i = 3; i < args.size(); i++) {
+            if (args[i]=="--leet")  doLeet=true;
+            if (args[i]=="--upper") doUpper=true;
+            if (args[i]=="--dates") doDates=true;
+            if (args[i]=="--nums")  doNums=true;
+            if (args[i]=="--save" && i+1<args.size()) saveFile=args[++i];
+        }
+        std::set<std::string> set;
+        set.insert(base);
+        set.insert(toLower(base));
+        if (doUpper) { std::string u=base; std::transform(u.begin(),u.end(),u.begin(),::toupper); set.insert(u); }
+        if (doLeet) {
+            std::map<char,char> lt={{'a','4'},{'e','3'},{'i','1'},{'o','0'},{'s','5'},{'t','7'}};
+            std::string lw=toLower(base);
+            for(char& c:lw){auto it=lt.find(c);if(it!=lt.end())c=it->second;}
+            set.insert(lw);
+        }
+        std::vector<std::string> base_words(set.begin(),set.end());
+        std::vector<std::string> suffixes = {"","!","123","2024","2025","@","#","*"};
+        if (doNums) for(int i=0;i<=99;i++) suffixes.push_back(std::to_string(i));
+        if (doDates) for(int y=2020;y<=2025;y++) suffixes.push_back(std::to_string(y));
+        for(auto& b:base_words) for(auto& s:suffixes) set.insert(b+s);
+        for(auto& w:set) words.push_back(w);
+
+        if (!saveFile.empty()) {
+            std::ofstream f(saveFile);
+            if (f) { for(auto& w:words) f<<w<<"\n"; f.close();
+                std::cout<<Color::BGREEN<<"  Salvato in: "<<saveFile<<" ("<<words.size()<<" parole)\n"<<Color::RESET; }
+        }
+
+    } else if (mode == "mask" && args.size() >= 3) {
+        // Maschera: ?l=minuscolo ?u=maiuscolo ?d=cifra ?s=speciale
+        std::string mask = args[2];
+        std::map<std::string,std::string> charsets = {
+            {"?l","abcdefghijklmnopqrstuvwxyz"},
+            {"?u","ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+            {"?d","0123456789"},
+            {"?s","!@#$%^&*()-_=+[]{}|;:,.<>?"}
+        };
+        std::cout << Color::YELLOW << "  Maschera: " << mask << "\n" << Color::RESET;
+        std::cout << Color::DIM << "  Nota: per maschere lunghe usa hashcat --mask direttamente\n\n";
+        std::cout << "  Charset:\n";
+        for(auto& p:charsets)
+            std::cout << "  " << p.first << " = " << p.second << "\n";
+        std::cout << Color::RESET << "\n";
+        std::cout << Color::DIM << "  Esempio hashcat: hashcat -a 3 hash.txt " << mask << "\n\n" << Color::RESET;
+        return;
+
+    } else if (mode == "resources") {
+        std::cout << Color::CYAN << "\n  WORDLIST PROFESSIONALI — DOVE TROVARLE\n" << Color::RESET;
+        std::cout << Color::DIM << "  " << std::string(55,'-') << "\n\n" << Color::RESET;
+
+        std::cout << Color::BYELLOW << "  SecLists (la piu' completa, gratuita)\n" << Color::RESET;
+        std::cout << Color::WHITE << "  git clone https://github.com/danielmiessler/SecLists\n\n";
+
+        std::cout << Color::BYELLOW << "  RockYou (14M password da breach reale)\n" << Color::RESET;
+        std::cout << Color::WHITE << "  Su Kali: /usr/share/wordlists/rockyou.txt.gz\n";
+        std::cout << Color::WHITE << "  Download: https://github.com/brannondorsey/naive-hashcat/releases\n\n";
+
+        std::cout << Color::BYELLOW << "  Kaonashi (ottimizzata per password italiane)\n" << Color::RESET;
+        std::cout << Color::WHITE << "  https://github.com/kaonashi-passwords/Kaonashi\n\n";
+
+        std::cout << Color::BYELLOW << "  CrackStation (1.5 miliardi di parole)\n" << Color::RESET;
+        std::cout << Color::WHITE << "  https://crackstation.net/crackstation-wordlist-password-cracking-dictionary.htm\n\n";
+
+        std::cout << Color::BYELLOW << "  Weakpass (raccolta di dizionari)\n" << Color::RESET;
+        std::cout << Color::WHITE << "  https://weakpass.com\n\n";
+
+        std::cout << Color::BYELLOW << "  Su Kali Linux sono gia' preinstallate in:\n" << Color::RESET;
+        std::cout << Color::WHITE << "  /usr/share/wordlists/\n\n";
+
+        std::cout << Color::DIM << "  DISCLAIMER: usare queste wordlist solo su sistemi\n";
+        std::cout << "  propri o con autorizzazione scritta del proprietario.\n" << Color::RESET << "\n";
+        return;
+
     } else {
-        std::cout<<Color::RED<<"  Argomenti non validi.\n"<<Color::RESET;
+        std::cout << Color::RED << "  Argomenti non validi. Digita: wordgen\n" << Color::RESET;
+        std::cout << "\n"; return;
     }
-    std::cout<<"\n";
+
+    // Output parole
+    std::string saveFile;
+    for (size_t i = 2; i < args.size(); i++)
+        if (args[i]=="--save" && i+1<args.size()) saveFile=args[++i];
+
+    for (auto& w : words)
+        std::cout << Color::GREEN << "  " << w << Color::RESET << "\n";
+
+    std::cout << Color::YELLOW << "\n  Totale: " << words.size() << " parole" << Color::RESET << "\n";
+
+    if (!saveFile.empty() && mode != "custom") {
+        std::ofstream f(saveFile);
+        if (f) { for(auto& w:words) f<<w<<"\n"; f.close();
+            std::cout<<Color::BGREEN<<"  Salvato in: "<<saveFile<<"\n"<<Color::RESET; }
+    }
+    std::cout << "\n";
 }
 
 // ─────────────────────────────────────────────
@@ -5049,6 +5174,7 @@ int main() {
             else if (cmd == "nmap"      || cmd == "masscan"   || cmd == "zmap"      ||
                      cmd == "sqlmap"    || cmd == "nikto"     || cmd == "gobuster"  ||
                      cmd == "ffuf"      || cmd == "wfuzz"     || cmd == "hydra"     ||
+                     cmd == "medusa"    || cmd == "patator"   || cmd == "crowbar"   ||
                      cmd == "hashcat"   || cmd == "john"      || cmd == "aircrack-ng"||
                      cmd == "binwalk"   || cmd == "foremost"  || cmd == "volatility"||
                      cmd == "exiftool"  || cmd == "steghide"  || cmd == "zsteg"     ||
@@ -5061,7 +5187,7 @@ int main() {
                      cmd == "docker"    || cmd == "tmux"      || cmd == "jq"        ||
                      cmd == "vim"       || cmd == "nano"      || cmd == "less"      ||
                      cmd == "awk"       || cmd == "sed"       || cmd == "tr"        ||
-                     cmd == "base64"    || cmd == "xxd"       || cmd == "strings"   ||
+                     cmd == "base64"    || cmd == "xxd"                             ||
                      cmd == "file"      || cmd == "lsof"      || cmd == "strace"    ||
                      cmd == "ltrace"    || cmd == "gdb"       || cmd == "objdump"   ||
                      cmd == "readelf"   || cmd == "nm"        || cmd == "strip"     ||
@@ -5069,7 +5195,11 @@ int main() {
                      cmd == "rsync"     || cmd == "tar"       || cmd == "zip"       ||
                      cmd == "unzip"     || cmd == "7z"        || cmd == "make"      ||
                      cmd == "gcc"       || cmd == "clang"     || cmd == "java"      ||
-                     cmd == "ruby"      || cmd == "perl"      || cmd == "php"       ) {
+                     cmd == "ruby"      || cmd == "perl"      || cmd == "php"       ||
+                     cmd == "msfconsole"|| cmd == "msfvenom"  || cmd == "searchsploit" ||
+                     cmd == "airmon-ng" || cmd == "airodump-ng"|| cmd == "aireplay-ng" ||
+                     cmd == "tshark"    || cmd == "tcpreplay" || cmd == "scapy"     ||
+                     cmd == "dirbuster" || cmd == "dirb"      || cmd == "feroxbuster") {
                 // Ricostruisce il comando completo e lo passa al sistema
                 std::string fullcmd;
                 for (size_t i = 0; i < tokens.size(); i++) {
