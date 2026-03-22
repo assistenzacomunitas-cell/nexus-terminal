@@ -6141,179 +6141,12 @@ void cmdVolatility(const std::vector<std::string>& args) {
     runShellCmd(volCmd);
 }
 
-#include <termios.h>
-
-// ─────────────────────────────────────────────
-//  INPUT — readline con frecce e TAB
-// ─────────────────────────────────────────────
 static std::vector<std::string> g_inputHistory;
-static int g_histPos = -1;
-
-// Lista comandi per TAB completion
-static const std::vector<std::string> ALL_CMDS = {
-    "help","clear","exit","quit","hash","fileinfo","hexdump","strings","grep","magic",
-    "entropy","binwalk","carve","checksum","exif","stego","diff","compare",
-    "freport","custody","hashdb","diskimage","memory","registry",
-    "scan","timeline","timeline2","filehide","permcheck","report","logcheck",
-    "sysinfo","sysaudit","processes","openports","filetree","duplicates","bigfiles",
-    "decode","encode","enc","hashid","hashcrack","passcheck","randgen",
-    "xor","jwt","cipher","freq","timestamp","wordgen","calc","note","notes","alias",
-    "dns","dnsall","dnsenum","whois","ping","traceroute","portcheck","portscan",
-    "httphead","secheaders","banner","hostinfo","ssl","sslscan2","subnet","macinfo",
-    "urlparse","netstat","netcap","arpscan","geoip2","myip","speedtest","monitor",
-    "git","nex","vol",
-    "ls","cd","pwd","cat","mkdir","rm","mv","cp","touch","find","wc","head","tail",
-    "echo","env","which","chmod","df","du","uname","whoami","date","uptime",
-    "sort","uniq","cut","man","history","python3","pip","pip3","sh","run",
-    "nmap","curl","wget","openssl","ssh","docker","node","npm","hydra",
-    "hashcat","john","sqlmap","nikto","gobuster","ffuf"
-};
 
 std::string nexusReadLine(const std::string& prompt) {
     std::cout << prompt << std::flush;
-
-    // Imposta terminal raw mode
-    struct termios oldt, newt;
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO);
-    newt.c_cc[VMIN] = 1;
-    newt.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
     std::string line;
-    int cursor = 0;
-    g_histPos = -1;
-    std::string savedLine;
-
-    auto redraw = [&](){
-        // Cancella riga corrente e riscrivi dall'inizio
-        std::cout << "\033[2K\r" << prompt << line;
-        // Riposiziona cursore se non alla fine
-        int backSteps = (int)line.size() - cursor;
-        if(backSteps > 0)
-            std::cout << "\033[" << backSteps << "D";
-        std::cout << std::flush;
-    };
-
-    while(true) {
-        char c;
-        if(read(STDIN_FILENO, &c, 1) != 1) break;
-
-        if(c == '\n' || c == '\r') {
-            std::cout << "\n";
-            break;
-        }
-        else if(c == 127 || c == 8) { // Backspace
-            if(cursor > 0) {
-                line.erase(cursor-1, 1);
-                cursor--;
-                redraw();
-            }
-        }
-        else if(c == '\t') { // TAB completion
-            std::string prefix = line.substr(0, cursor);
-            // Trova spazio — se è il primo token, completa comandi
-            size_t spacePos = prefix.find(' ');
-            std::vector<std::string> matches;
-            if(spacePos == std::string::npos) {
-                // Completa comando
-                for(auto& cmd : ALL_CMDS)
-                    if(cmd.substr(0, prefix.size()) == prefix) matches.push_back(cmd);
-            } else {
-                // Completa file/dir
-                std::string partial = prefix.substr(spacePos+1);
-                std::string dirPart = ".";
-                std::string filePart = partial;
-                size_t lastSlash = partial.rfind('/');
-                if(lastSlash != std::string::npos) {
-                    dirPart = partial.substr(0, lastSlash);
-                    filePart = partial.substr(lastSlash+1);
-                }
-                DIR* d = opendir(dirPart.c_str());
-                if(d) {
-                    struct dirent* ent;
-                    while((ent=readdir(d))!=nullptr) {
-                        std::string n=ent->d_name;
-                        if(n=="."||n=="..") continue;
-                        if(n.substr(0,filePart.size())==filePart)
-                            matches.push_back((dirPart=="."?"":dirPart+"/")+n);
-                    }
-                    closedir(d);
-                }
-            }
-            if(matches.size()==1) {
-                std::string completion = matches[0];
-                if(spacePos==std::string::npos) { line=completion; cursor=line.size(); }
-                else {
-                    size_t wordStart = line.rfind(' ',cursor-1)+1;
-                    line = line.substr(0,wordStart)+completion;
-                    cursor = line.size();
-                }
-                redraw();
-            } else if(matches.size()>1) {
-                std::cout << "\n";
-                for(auto& m:matches) std::cout<<"  "<<m<<"  ";
-                std::cout << "\n";
-                std::cout << prompt << line << std::flush;
-            }
-        }
-        else if(c == '\033') { // Escape sequence
-            char seq[3]={0};
-            if(read(STDIN_FILENO,&seq[0],1)!=1) continue;
-            if(read(STDIN_FILENO,&seq[1],1)!=1) continue;
-            if(seq[0]=='[') {
-                if(seq[1]=='A') { // Su — history precedente
-                    if(g_histPos==-1) { savedLine=line; g_histPos=(int)g_inputHistory.size()-1; }
-                    else if(g_histPos>0) g_histPos--;
-                    if(g_histPos>=0&&g_histPos<(int)g_inputHistory.size()) {
-                        line=g_inputHistory[g_histPos]; cursor=line.size(); redraw();
-                    }
-                } else if(seq[1]=='B') { // Giu — history successiva
-                    if(g_histPos>=0) {
-                        g_histPos++;
-                        if(g_histPos>=(int)g_inputHistory.size()) {
-                            g_histPos=-1; line=savedLine;
-                        } else { line=g_inputHistory[g_histPos]; }
-                        cursor=line.size(); redraw();
-                    }
-                } else if(seq[1]=='C') { // Destra
-                    if(cursor<(int)line.size()) { cursor++; std::cout<<"\033[1C"<<std::flush; }
-                } else if(seq[1]=='D') { // Sinistra
-                    if(cursor>0) { cursor--; std::cout<<"\033[1D"<<std::flush; }
-                } else if(seq[1]=='H' || seq[1]=='1') { // Home
-                    cursor=0; redraw();
-                } else if(seq[1]=='F' || seq[1]=='4') { // End
-                    cursor=line.size(); redraw();
-                }
-            }
-        }
-        else if(c>=32 && c<127) { // Carattere normale
-            line.insert(cursor, 1, c);
-            cursor++;
-            redraw();
-        }
-        else if(c==3) { // Ctrl+C
-            line=""; std::cout<<"\n"; break;
-        }
-        else if(c==4) { // Ctrl+D
-            if(line.empty()) { line="exit"; std::cout<<"\n"; break; }
-        }
-        else if(c==1) { // Ctrl+A — inizio riga
-            cursor=0; redraw();
-        }
-        else if(c==5) { // Ctrl+E — fine riga
-            cursor=line.size(); redraw();
-        }
-        else if(c==11) { // Ctrl+K — cancella fino a fine riga
-            line=line.substr(0,cursor); redraw();
-        }
-        else if(c==21) { // Ctrl+U — cancella tutta la riga
-            line=""; cursor=0; redraw();
-        }
-    }
-
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    if (!std::getline(std::cin, line)) return "exit";
     return line;
 }
 
@@ -6537,29 +6370,30 @@ void cmdSh(const std::vector<std::string>& args) {
 // ─────────────────────────────────────────────
 //  PROMPT
 // ─────────────────────────────────────────────
-std::string getPrompt() {
+std::string getPromptTop() {
     char cwd[512];
     if (!getcwd(cwd, sizeof(cwd))) strncpy(cwd, "/", sizeof(cwd));
     std::string user = getenv("USER") ? getenv("USER") : "nexus";
     char hostname[64];
     gethostname(hostname, sizeof(hostname));
-
-    // Abbrevia il path home con ~
     std::string path = cwd;
     const char* home = getenv("HOME");
     if (home && path.find(home) == 0)
         path = "~" + path.substr(strlen(home));
+    return Color::CYAN + "╭─[" + Color::BRED + "nexus"
+         + Color::WHITE + "@" + Color::BYELLOW + user
+         + Color::CYAN + "]─[" + Color::WHITE + path
+         + Color::CYAN + "]" + Color::RESET;
+}
 
-    std::string line1 = Color::CYAN + "╭─[" + Color::BRED + "nexus" 
-                      + Color::WHITE + "@" + Color::BYELLOW + user
-                      + Color::CYAN + "]─[" + Color::WHITE + path
-                      + Color::CYAN + "]" + Color::RESET;
-
+std::string getPromptBottom() {
+    std::string user = getenv("USER") ? getenv("USER") : "nexus";
     std::string arrow = (user == "root") ? Color::BRED + "# " : Color::BGREEN + "$ ";
+    return Color::CYAN + "╰─" + arrow + Color::RESET;
+}
 
-    std::string line2 = Color::CYAN + "╰─" + arrow + Color::RESET;
-
-    return "\n" + line1 + "\n" + line2;
+std::string getPrompt() {
+    return "\n" + getPromptTop() + "\n" + getPromptBottom();
 }
 
 // ─────────────────────────────────────────────
@@ -6579,7 +6413,8 @@ int main() {
 
     std::string line;
     while (true) {
-        line = nexusReadLine(getPrompt());
+        std::cout << "\n" << getPromptTop() << "\n" << std::flush;
+        line = nexusReadLine(getPromptBottom());
         line = trim(line);
         if (line.empty()) continue;
 
