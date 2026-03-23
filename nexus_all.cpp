@@ -30,6 +30,9 @@
 #include <unistd.h>
 #include <pwd.h>
 #include <grp.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 // ─────────────────────────────────────────────
 //  COLORI ANSI
@@ -4765,6 +4768,7 @@ void cmdHelp() {
     row("monitor",                       "Dashboard live CPU/RAM/rete");
 
     section("TERMINALE");
+    row("update",                         "Aggiorna NEXUS da GitHub");
     row("help",                           "Mostra questo menu");
     row("clear",                          "Pulisci schermo");
     row("exit / quit",                    "Esci");
@@ -6141,6 +6145,132 @@ void cmdVolatility(const std::vector<std::string>& args) {
     runShellCmd(volCmd);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CMD: update — aggiorna NEXUS da GitHub
+// ═══════════════════════════════════════════════════════════════
+void cmdUpdate(const std::vector<std::string>& args) {
+    std::cout << Color::CYAN << "\n  NEXUS UPDATE\n" << Color::RESET;
+    std::cout << Color::DIM << "  " << std::string(50,'-') << "\n" << Color::RESET;
+
+    // Trova la directory del binario in esecuzione
+    char exePath[1024] = {0};
+#ifdef __APPLE__
+    uint32_t size = sizeof(exePath);
+    if (_NSGetExecutablePath(exePath, &size) != 0) {
+        std::cout << Color::RED << "  Impossibile trovare il percorso del binario.\n" << Color::RESET;
+        return;
+    }
+#else
+    if (readlink("/proc/self/exe", exePath, sizeof(exePath)-1) < 0) {
+        std::cout << Color::RED << "  Impossibile trovare il percorso del binario.\n" << Color::RESET;
+        return;
+    }
+#endif
+
+    std::string binPath = exePath;
+    std::cout << Color::YELLOW << "  Binario    : " << Color::WHITE << binPath << "\n" << Color::RESET;
+
+    // Cerca il repo git (cerca nexus_all.cpp risalendo le directory)
+    std::string repoDir;
+    char cwd[512]; getcwd(cwd, sizeof(cwd));
+
+    // Prova directory comuni
+    std::vector<std::string> candidates = {
+        std::string(cwd),
+        std::string(getenv("HOME")?getenv("HOME"):".") + "/nexus-terminal",
+        std::string(getenv("HOME")?getenv("HOME"):".") + "/nexus",
+    };
+    for (auto& c : candidates) {
+        if (fileExists(c + "/nexus_all.cpp") && fileExists(c + "/.git")) {
+            repoDir = c; break;
+        }
+        if (fileExists(c + "/nexus_all.cpp")) {
+            repoDir = c; break;
+        }
+    }
+
+    if (repoDir.empty()) {
+        std::cout << Color::RED << "  Repository non trovata.\n" << Color::RESET;
+        std::cout << Color::DIM << "  Clona prima il repo:\n";
+        std::cout << "  git clone https://github.com/assistenzacomunitas-cell/nexus-terminal.git\n\n" << Color::RESET;
+        return;
+    }
+
+    std::cout << Color::YELLOW << "  Repository : " << Color::WHITE << repoDir << "\n\n" << Color::RESET;
+
+    // Step 1: git pull
+    std::cout << Color::CYAN << "  [1/3] Scarico aggiornamenti...\n" << Color::RESET;
+    std::string pullCmd = "cd " + repoDir + " && git pull 2>&1";
+    FILE* p = popen(pullCmd.c_str(), "r");
+    if (p) {
+        char buf[256]; bool updated = false;
+        while (fgets(buf, sizeof(buf), p)) {
+            std::string l(buf);
+            if (l.find("Already up to date") != std::string::npos ||
+                l.find("Already up-to-date") != std::string::npos) {
+                std::cout << Color::GREEN << "  Gia' aggiornato all'ultima versione.\n" << Color::RESET;
+                pclose(p);
+                std::cout << "\n"; return;
+            }
+            if (l.find("Updating") != std::string::npos ||
+                l.find("Fast-forward") != std::string::npos) updated = true;
+            std::cout << Color::DIM << "  " << l << Color::RESET;
+        }
+        pclose(p);
+        if (!updated) {
+            std::cout << Color::YELLOW << "  Nessun aggiornamento disponibile.\n\n" << Color::RESET;
+            return;
+        }
+    }
+
+    // Step 2: ricompila
+    std::cout << Color::CYAN << "\n  [2/3] Compilo la nuova versione...\n" << Color::RESET;
+    std::string compileCmd = "cd " + repoDir +
+        " && g++ -std=c++17 -O2 -o nxt_new nexus_all.cpp 2>&1";
+    FILE* p2 = popen(compileCmd.c_str(), "r");
+    bool compileOk = true;
+    if (p2) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), p2)) {
+            std::string l(buf);
+            if (l.find("error") != std::string::npos) { compileOk = false; }
+            std::cout << Color::DIM << "  " << l << Color::RESET;
+        }
+        pclose(p2);
+    }
+
+    if (!compileOk) {
+        std::cout << Color::RED << "  Compilazione fallita. Update annullato.\n\n" << Color::RESET;
+        return;
+    }
+
+    // Step 3: sostituisce il binario
+    std::cout << Color::CYAN << "\n  [3/3] Installo la nuova versione...\n" << Color::RESET;
+
+    // Prova a copiare in /usr/local/bin/nxt
+    std::string installCmd = "cd " + repoDir +
+        " && sudo cp nxt_new /usr/local/bin/nxt && rm -f nxt_new 2>&1";
+    FILE* p3 = popen(installCmd.c_str(), "r");
+    bool installOk = false;
+    if (p3) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), p3)) std::cout << Color::DIM << "  " << buf << Color::RESET;
+        installOk = (pclose(p3) == 0);
+    }
+
+    if (installOk) {
+        std::cout << Color::BGREEN << "\n  NEXUS aggiornato con successo!\n";
+        std::cout << Color::WHITE << "  Riavvia il terminale per usare la nuova versione.\n\n" << Color::RESET;
+    } else {
+        // Fallback: copia locale
+        std::string fallback = "cd " + repoDir + " && cp nxt_new nxt && rm -f nxt_new";
+        system(fallback.c_str());
+        std::cout << Color::YELLOW << "\n  Installato localmente in " << repoDir << "/nxt\n";
+        std::cout << Color::DIM << "  Per installazione globale: sudo cp " << repoDir << "/nxt /usr/local/bin/nxt\n\n" << Color::RESET;
+    }
+}
+
+
 static std::vector<std::string> g_inputHistory;
 
 std::string nexusReadLine(const std::string& fullPrompt) {
@@ -6551,6 +6681,7 @@ int main() {
                 }
                 runShellCmd(fullcmd);
             }
+            else if (cmd == "update")     { cmdUpdate(tokens); }
             else if (cmd == "filetree")   { cmdFileTree(tokens); }
             else if (cmd == "duplicates") { cmdDuplicates(tokens); }
             else if (cmd == "bigfiles")   { cmdBigFiles(tokens); }
