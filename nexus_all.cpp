@@ -6370,30 +6370,17 @@ void cmdSh(const std::vector<std::string>& args) {
 // ─────────────────────────────────────────────
 //  PROMPT
 // ─────────────────────────────────────────────
-std::string getPromptTop() {
+std::string getPrompt() {
     char cwd[512];
     if (!getcwd(cwd, sizeof(cwd))) strncpy(cwd, "/", sizeof(cwd));
     std::string user = getenv("USER") ? getenv("USER") : "nexus";
-    char hostname[64];
-    gethostname(hostname, sizeof(hostname));
     std::string path = cwd;
     const char* home = getenv("HOME");
     if (home && path.find(home) == 0)
         path = "~" + path.substr(strlen(home));
-    return Color::CYAN + "╭─[" + Color::BRED + "nexus"
-         + Color::WHITE + "@" + Color::BYELLOW + user
-         + Color::CYAN + "]─[" + Color::WHITE + path
-         + Color::CYAN + "]" + Color::RESET;
-}
-
-std::string getPromptBottom() {
-    std::string user = getenv("USER") ? getenv("USER") : "nexus";
     std::string arrow = (user == "root") ? Color::BRED + "# " : Color::BGREEN + "$ ";
-    return Color::CYAN + "╰─" + arrow + Color::RESET;
-}
-
-std::string getPrompt() {
-    return "\n" + getPromptTop() + "\n" + getPromptBottom();
+    return Color::BRED + "[nexus]" + Color::CYAN + "─" +
+           Color::WHITE + path + Color::YELLOW + " " + arrow + Color::RESET;
 }
 
 // ─────────────────────────────────────────────
@@ -6413,8 +6400,7 @@ int main() {
 
     std::string line;
     while (true) {
-        std::cout << "\n" << getPromptTop() << "\n" << std::flush;
-        line = nexusReadLine(getPromptBottom());
+        line = nexusReadLine(getPrompt());
         line = trim(line);
         if (line.empty()) continue;
 
