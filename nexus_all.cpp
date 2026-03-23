@@ -6143,8 +6143,13 @@ void cmdVolatility(const std::vector<std::string>& args) {
 
 static std::vector<std::string> g_inputHistory;
 
-std::string nexusReadLine(const std::string& prompt) {
-    std::cout << prompt << std::flush;
+std::string nexusReadLine(const std::string& fullPrompt) {
+    // Separa riga superiore e inferiore
+    size_t nl = fullPrompt.rfind('\n');
+    std::string topLine    = (nl != std::string::npos) ? fullPrompt.substr(0, nl) : "";
+    std::string bottomLine = (nl != std::string::npos) ? fullPrompt.substr(nl+1) : fullPrompt;
+
+    std::cout << "\n" << topLine << "\n" << bottomLine << std::flush;
     std::string line;
     if (!std::getline(std::cin, line)) return "exit";
     return line;
@@ -6374,13 +6379,21 @@ std::string getPrompt() {
     char cwd[512];
     if (!getcwd(cwd, sizeof(cwd))) strncpy(cwd, "/", sizeof(cwd));
     std::string user = getenv("USER") ? getenv("USER") : "nexus";
+    char hostname[64]; gethostname(hostname, sizeof(hostname));
     std::string path = cwd;
     const char* home = getenv("HOME");
     if (home && path.find(home) == 0)
         path = "~" + path.substr(strlen(home));
     std::string arrow = (user == "root") ? Color::BRED + "# " : Color::BGREEN + "$ ";
-    return Color::BRED + "[nexus]" + Color::CYAN + "─" +
-           Color::WHITE + path + Color::YELLOW + " " + arrow + Color::RESET;
+    // Riga superiore — stampata una volta sola nel main loop
+    std::string top = Color::BGREEN + "(" + Color::BRED + "nexus" +
+                      Color::WHITE  + "@" + Color::BYELLOW + std::string(hostname) +
+                      Color::BGREEN + ")" + Color::WHITE + "-" +
+                      Color::BGREEN + "[" + Color::WHITE + path + Color::BGREEN + "]" +
+                      Color::RESET;
+    // Riga inferiore — usata come prompt di input
+    std::string bottom = Color::BGREEN + "╰─" + arrow + Color::RESET;
+    return top + "\n" + bottom;
 }
 
 // ─────────────────────────────────────────────
