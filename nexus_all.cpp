@@ -4767,6 +4767,24 @@ void cmdHelp() {
     row("speedtest",                     "Test velocità connessione");
     row("monitor",                       "Dashboard live CPU/RAM/rete");
 
+    section("ANALISI FILE AVANZATA");
+    row("pdfinfo <file.pdf>",            "Analisi PDF: meta, JS, links, sicurezza");
+    row("zipinfo <file.zip>",            "Analisi ZIP: contenuto, cifratura");
+    row("docinfo <file.docx|xlsx>",      "Analisi Office: meta, macro VBA");
+    row("strings2 <file> [--all]",       "Estrai URL/email/IP dai file");
+
+    section("CRYPTO AVANZATO");
+    row("baseenc <base32|58|85|62> <t>", "Encoding base32/58/85/62");
+    row("rot47 <testo>",                 "ROT47 su tutti i caratteri stampabili");
+    row("cipherx <rail2|rail3|bacon>",   "Rail fence, Bacone e altri cifrari");
+    row("crcx <file>",                   "CRC-16, CRC-32, FNV-1a 64bit");
+
+    section("RETE & OSINT AVANZATO");
+    row("osint <dominio|ip>",            "OSINT completo: DNS+WHOIS+GeoIP+subdom");
+    row("http <url> [--method --data]",  "HTTP client GET/POST completo");
+    row("iprange <ip/cidr>",             "Analisi range IP/CIDR dettagliata");
+    row("pscan <host> [--top|--full]",   "Port scan con banner grab");
+
     section("TERMINALE");
     row("update",                         "Aggiorna NEXUS da GitHub");
     row("help",                           "Mostra questo menu");
@@ -6148,6 +6166,668 @@ void cmdVolatility(const std::vector<std::string>& args) {
 // ═══════════════════════════════════════════════════════════════
 //  CMD: update — aggiorna NEXUS da GitHub
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+//  ANALISI FILE AVANZATA
+// ═══════════════════════════════════════════════════════════════
+
+// ── pdfinfo — analisi file PDF
+void cmdPdfInfo(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: pdfinfo <file.pdf>\n"<<Color::RESET;return;}
+    std::string path=args[1];
+    std::ifstream f(path,std::ios::binary);
+    if(!f){std::cout<<Color::RED<<"  File non trovato.\n"<<Color::RESET;return;}
+
+    std::cout<<Color::CYAN<<"\n  PDF ANALYSIS: "<<path<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(55,'-')<<"\n"<<Color::RESET;
+
+    // Magic bytes
+    char hdr[8]={0}; f.read(hdr,8);
+    bool isPdf=(strncmp(hdr,"%PDF",4)==0);
+    std::cout<<Color::YELLOW<<"  Tipo     : "<<Color::WHITE<<(isPdf?"PDF valido":"Non e' un PDF valido")<<"\n"<<Color::RESET;
+    if(!isPdf) return;
+
+    // Versione PDF
+    std::string ver(hdr+5,3);
+    std::cout<<Color::YELLOW<<"  Versione : "<<Color::WHITE<<"PDF-"<<ver<<"\n"<<Color::RESET;
+
+    // Legge tutto
+    f.seekg(0); std::string content((std::istreambuf_iterator<char>(f)),{});
+
+    // Conta oggetti
+    int objCount=0; size_t pos=0;
+    while((pos=content.find(" obj",pos))!=std::string::npos){objCount++;pos+=4;}
+    std::cout<<Color::YELLOW<<"  Oggetti  : "<<Color::WHITE<<objCount<<"\n"<<Color::RESET;
+
+    // Cerca pagine
+    auto findVal=[&](const std::string& key)->std::string{
+        size_t p=content.find(key);
+        if(p==std::string::npos) return "";
+        size_t s=content.find_first_not_of(" \t\r\n",p+key.size());
+        size_t e=content.find_first_of(" \t\r\n/",s);
+        return content.substr(s,e-s);
+    };
+    std::string pages=findVal("/Count ");
+    if(!pages.empty()) std::cout<<Color::YELLOW<<"  Pagine   : "<<Color::WHITE<<pages<<"\n"<<Color::RESET;
+
+    // Cerca metadati
+    std::vector<std::pair<std::string,std::string>> meta={
+        {"/Title ","Titolo"},{"/Author ","Autore"},{"/Subject ","Soggetto"},
+        {"/Creator ","Creatore"},{"/Producer ","Producer"},{"/CreationDate ","Creato"},
+        {"/ModDate ","Modificato"}
+    };
+    std::cout<<Color::YELLOW<<"\n  METADATI:\n"<<Color::RESET;
+    bool foundMeta=false;
+    for(auto& m:meta){
+        size_t mp=content.find(m.first);
+        if(mp!=std::string::npos){
+            size_t vs=mp+m.first.size();
+            char delim=content[vs]=='('?'(':'/';
+            if(delim=='('){
+                size_t ve=content.find(')',vs+1);
+                std::string val=content.substr(vs+1,ve-vs-1);
+                if(!trim(val).empty()){
+                    std::cout<<Color::DIM<<"  "<<std::left<<std::setw(12)<<m.second<<Color::WHITE<<trim(val)<<"\n"<<Color::RESET;
+                    foundMeta=true;
+                }
+            }
+        }
+    }
+    if(!foundMeta) std::cout<<Color::DIM<<"  Nessun metadato trovato.\n"<<Color::RESET;
+
+    // Cerca JS, links, form
+    std::cout<<Color::YELLOW<<"\n  ANALISI SICUREZZA:\n"<<Color::RESET;
+    auto chk=[&](const std::string& pat, const std::string& label, const std::string& risk){
+        bool found=content.find(pat)!=std::string::npos;
+        std::cout<<(found?Color::YELLOW+"  [!] ":Color::GREEN+"  [ok] ")
+                 <<Color::WHITE<<std::left<<std::setw(18)<<label
+                 <<Color::DIM<<(found?risk:"non trovato")<<Color::RESET<<"\n";
+    };
+    chk("/JavaScript","JavaScript","potenziale rischio — analizza il contenuto");
+    chk("/JS ","JS embedded","codice JS embedded");
+    chk("/EmbeddedFile","File embedded","contiene file allegati");
+    chk("/Encrypt","Cifratura","PDF cifrato");
+    chk("/URI","URI/Link","contiene link esterni");
+    chk("/AcroForm","AcroForm","contiene form interattivi");
+    chk("/OpenAction","OpenAction","azione automatica all'apertura");
+    std::cout<<"\n";
+
+    // Hash
+    std::cout<<Color::YELLOW<<"  MD5    : "<<Color::GREEN<<MD5::hashFile(path)<<"\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  SHA256 : "<<Color::GREEN<<SHA256::hashFile(path)<<"\n\n"<<Color::RESET;
+}
+
+// ── zipinfo — analisi archivi ZIP
+void cmdZipInfo(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: zipinfo <file.zip>\n"<<Color::RESET;return;}
+    std::string path=args[1];
+    std::ifstream f(path,std::ios::binary);
+    if(!f){std::cout<<Color::RED<<"  File non trovato.\n"<<Color::RESET;return;}
+
+    // Verifica magic bytes PK
+    char hdr[4]={0}; f.read(hdr,4);
+    if(hdr[0]!='P'||hdr[1]!='K'){std::cout<<Color::RED<<"  Non e' un archivio ZIP valido.\n"<<Color::RESET;return;}
+
+    f.seekg(0,std::ios::end); size_t fsize=f.tellg(); f.seekg(0);
+    std::vector<uint8_t> data(fsize); f.read((char*)data.data(),fsize);
+
+    std::cout<<Color::CYAN<<"\n  ZIP ANALYSIS: "<<path<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(65,'-')<<"\n";
+    std::cout<<"  "<<std::left<<std::setw(40)<<"FILE"<<std::setw(10)<<"COMPRESSA"<<std::setw(10)<<"ORIGINALE"<<"FLAGS\n";
+    std::cout<<"  "<<std::string(65,'-')<<"\n"<<Color::RESET;
+
+    size_t i=0; int fileCount=0; size_t totalComp=0,totalOrig=0;
+    while(i+30<fsize){
+        if(data[i]!='P'||data[i+1]!='K'||data[i+2]!=0x03||data[i+3]!=0x04) {i++;continue;}
+        // Local file header
+        uint16_t flags,method,fnLen,extraLen;
+        uint32_t compSize,origSize;
+        memcpy(&flags,&data[i+6],2);
+        memcpy(&method,&data[i+8],2);
+        memcpy(&compSize,&data[i+18],4);
+        memcpy(&origSize,&data[i+22],4);
+        memcpy(&fnLen,&data[i+26],2);
+        memcpy(&extraLen,&data[i+28],2);
+        if(i+30+fnLen>fsize) break;
+        std::string name(data.begin()+i+30,data.begin()+i+30+fnLen);
+        fileCount++; totalComp+=compSize; totalOrig+=origSize;
+        bool encrypted=(flags&0x1);
+        std::string methodStr=(method==0?"Store":method==8?"Deflate":method==14?"LZMA":"Other");
+        std::cout<<(encrypted?Color::YELLOW:Color::WHITE)<<"  "<<std::left<<std::setw(40)<<name.substr(0,39)
+                 <<Color::DIM<<std::setw(10)<<humanSize(compSize)<<std::setw(10)<<humanSize(origSize)
+                 <<(encrypted?"[CIFRATO] ":"")<<methodStr<<Color::RESET<<"\n";
+        i+=30+fnLen+extraLen+compSize;
+    }
+    std::cout<<Color::DIM<<"  "<<std::string(65,'-')<<"\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  File: "<<fileCount<<"  Compressa: "<<humanSize(totalComp)
+             <<"  Originale: "<<humanSize(totalOrig)<<"\n\n"<<Color::RESET;
+}
+
+// ── docinfo — analisi DOCX/XLSX/PPTX (ZIP+XML)
+void cmdDocInfo(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: docinfo <file.docx|xlsx|pptx>\n"<<Color::RESET;return;}
+    std::string path=args[1];
+    std::ifstream f(path,std::ios::binary);
+    if(!f){std::cout<<Color::RED<<"  File non trovato.\n"<<Color::RESET;return;}
+
+    char hdr[4]={0}; f.read(hdr,4);
+    if(hdr[0]!='P'||hdr[1]!='K'){std::cout<<Color::RED<<"  Non e' un file Office valido (non ZIP).\n"<<Color::RESET;return;}
+
+    f.seekg(0,std::ios::end); size_t fsize=f.tellg(); f.seekg(0);
+    std::vector<uint8_t> data(fsize); f.read((char*)data.data(),fsize);
+
+    std::cout<<Color::CYAN<<"\n  OFFICE DOCUMENT ANALYSIS: "<<path<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(55,'-')<<"\n"<<Color::RESET;
+
+    // Tipo file
+    std::string ext; auto dot=path.rfind('.'); if(dot!=std::string::npos) ext=toLower(path.substr(dot));
+    std::string docType=(ext==".docx"?"Word Document":ext==".xlsx"?"Excel Spreadsheet":ext==".pptx"?"PowerPoint":ext==".odt"?"OpenDocument Text":"Office Document");
+    std::cout<<Color::YELLOW<<"  Tipo     : "<<Color::WHITE<<docType<<"\n"<<Color::RESET;
+
+    // Cerca docProps/core.xml nel ZIP per metadati
+    std::string content(data.begin(),data.end());
+    auto extractXml=[&](const std::string& tag)->std::string{
+        std::string open="<"+tag+">";
+        std::string close="</"+tag+">";
+        size_t s=content.find(open);
+        if(s==std::string::npos){
+            // prova con namespace
+            s=content.find(":"+tag+">");
+            if(s==std::string::npos) return "";
+            s=content.rfind('<',s)+1;
+            size_t e=content.find("</",s);
+            size_t vs=content.find('>',s)+1;
+            size_t ve=content.find('<',vs);
+            return content.substr(vs,ve-vs);
+        }
+        size_t e=content.find(close,s);
+        return content.substr(s+open.size(),e-s-open.size());
+    };
+
+    std::cout<<Color::YELLOW<<"\n  METADATI:\n"<<Color::RESET;
+    std::vector<std::pair<std::string,std::string>> tags={
+        {"dc:title","Titolo"},{"dc:creator","Autore"},{"dc:subject","Soggetto"},
+        {"dc:description","Descrizione"},{"cp:lastModifiedBy","Ultimo edit"},
+        {"dcterms:created","Creato"},{"dcterms:modified","Modificato"},
+        {"cp:revision","Revisione"},{"cp:lastPrinted","Stampato"}
+    };
+    bool any=false;
+    for(auto& t:tags){
+        std::string val=extractXml(t.first);
+        if(!val.empty()&&val.size()<100){
+            std::cout<<Color::DIM<<"  "<<std::left<<std::setw(16)<<t.second<<Color::WHITE<<val<<"\n"<<Color::RESET;
+            any=true;
+        }
+    }
+    if(!any) std::cout<<Color::DIM<<"  Metadati non trovati o non accessibili senza decompressione.\n"<<Color::RESET;
+
+    // Conta file interni
+    int fc=0; size_t p=0;
+    while((p=content.find("PK\x03\x04",p))!=std::string::npos){fc++;p+=4;}
+    std::cout<<Color::YELLOW<<"\n  File interni: "<<Color::WHITE<<fc<<"\n"<<Color::RESET;
+
+    // Cerca macro
+    bool hasMacro=(content.find("vbaProject")!=std::string::npos||content.find("macros")!=std::string::npos);
+    std::cout<<Color::YELLOW<<"  Macro VBA : "<<(hasMacro?Color::BRED+"PRESENTE (attenzione!)":Color::GREEN+"Assente")<<Color::RESET<<"\n";
+
+    std::cout<<Color::YELLOW<<"\n  MD5    : "<<Color::GREEN<<MD5::hashFile(path)<<"\n\n"<<Color::RESET;
+}
+
+// ── strings avanzato con pattern URL/email/IP
+void cmdStrings2(const std::vector<std::string>& args) {
+    if(args.size()<2){
+        std::cout<<Color::YELLOW<<"Uso: strings2 <file> [--urls] [--emails] [--ips] [--all]\n"<<Color::RESET;return;
+    }
+    std::string path=args[1];
+    bool doUrls=false,doEmails=false,doIps=false;
+    for(size_t i=2;i<args.size();i++){
+        if(args[i]=="--urls")   doUrls=true;
+        if(args[i]=="--emails") doEmails=true;
+        if(args[i]=="--ips")    doIps=true;
+        if(args[i]=="--all")    doUrls=doEmails=doIps=true;
+    }
+    if(!doUrls&&!doEmails&&!doIps) doUrls=doEmails=doIps=true;
+
+    std::ifstream f(path,std::ios::binary);
+    if(!f){std::cout<<Color::RED<<"  File non trovato.\n"<<Color::RESET;return;}
+
+    std::cout<<Color::CYAN<<"\n  STRINGS2: "<<path<<"\n"<<Color::RESET;
+    std::string cur; char c;
+    std::set<std::string> urls,emails,ips;
+
+    while(f.get(c)){
+        if(c>=32&&c<=126) cur+=c;
+        else{
+            if(cur.size()>=4){
+                if(doUrls&&(cur.find("http://")!=std::string::npos||cur.find("https://")!=std::string::npos||cur.find("ftp://")!=std::string::npos)) urls.insert(cur.substr(0,200));
+                if(doEmails&&cur.find('@')!=std::string::npos&&cur.find('.')!=std::string::npos) emails.insert(cur.substr(0,100));
+                if(doIps&&cur.size()>=7&&cur.size()<=15){
+                    int a,b,cc,d; char ex;
+                    if(sscanf(cur.c_str(),"%d.%d.%d.%d%c",&a,&b,&cc,&d,&ex)==4&&
+                       a>=0&&a<=255&&b>=0&&b<=255&&cc>=0&&cc<=255&&d>=0&&d<=255) ips.insert(cur);
+                }
+            }
+            cur.clear();
+        }
+    }
+
+    if(doUrls&&!urls.empty()){
+        std::cout<<Color::YELLOW<<"  URL ("<<urls.size()<<"):\n"<<Color::RESET;
+        for(auto& u:urls) std::cout<<Color::CYAN<<"  "<<u<<Color::RESET<<"\n";
+    }
+    if(doEmails&&!emails.empty()){
+        std::cout<<Color::YELLOW<<"\n  EMAIL ("<<emails.size()<<"):\n"<<Color::RESET;
+        for(auto& e:emails) std::cout<<Color::WHITE<<"  "<<e<<Color::RESET<<"\n";
+    }
+    if(doIps&&!ips.empty()){
+        std::cout<<Color::YELLOW<<"\n  IP ("<<ips.size()<<"):\n"<<Color::RESET;
+        for(auto& ip:ips) std::cout<<Color::GREEN<<"  "<<ip<<Color::RESET<<"\n";
+    }
+    std::cout<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CRYPTO AVANZATO
+// ═══════════════════════════════════════════════════════════════
+
+// ── base58 / base85 / base32
+std::string base58Encode(const std::string& input) {
+    const std::string ALPHABET="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    std::vector<uint8_t> bytes(input.begin(),input.end());
+    std::vector<int> digits={0};
+    for(uint8_t b:bytes){
+        int carry=b;
+        for(int& d:digits){carry+=d*256;d=carry%58;carry/=58;}
+        while(carry){digits.push_back(carry%58);carry/=58;}
+    }
+    std::string result;
+    for(char c:input) if(c==0) result+=ALPHABET[0]; else break;
+    for(auto it=digits.rbegin();it!=digits.rend();++it) result+=ALPHABET[*it];
+    return result;
+}
+
+std::string base32Encode(const std::string& input) {
+    const std::string CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    std::string out; int buf=0,bits=0;
+    for(uint8_t c:input){
+        buf=(buf<<8)|c; bits+=8;
+        while(bits>=5){bits-=5;out+=CHARS[(buf>>bits)&0x1F];}
+    }
+    if(bits>0) out+=CHARS[(buf<<(5-bits))&0x1F];
+    while(out.size()%8) out+='=';
+    return out;
+}
+
+void cmdBaseEncode(const std::vector<std::string>& args) {
+    if(args.size()<3){
+        std::cout<<Color::YELLOW<<"Uso: baseenc <tipo> <testo>\n"
+                 <<"  Tipi: base32, base58, base85, base62\n"<<Color::RESET;return;
+    }
+    std::string type=toLower(args[1]),input;
+    for(size_t i=2;i<args.size();i++){if(i>2)input+=' ';input+=args[i];}
+
+    std::cout<<Color::CYAN<<"\n  BASE ENCODE ["<<type<<"]\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  Input : "<<Color::WHITE<<input<<"\n"<<Color::RESET;
+
+    std::string result;
+    if(type=="base32")  result=base32Encode(input);
+    else if(type=="base58") result=base58Encode(input);
+    else if(type=="base85"||type=="ascii85"){
+        // ASCII85
+        std::string out; uint32_t acc=0; int cnt=0;
+        for(uint8_t c:input){
+            acc=(acc<<8)|c; cnt++;
+            if(cnt==4){
+                if(acc==0){out+='z';}
+                else{
+                    char tmp[5];
+                    for(int i=4;i>=0;i--){tmp[i]='!'+acc%85;acc/=85;}
+                    for(int i=0;i<5;i++) out+=tmp[i];
+                }
+                cnt=0; acc=0;
+            }
+        }
+        if(cnt>0){
+            acc<<=(8*(4-cnt));
+            char tmp[5]; for(int i=4;i>=0;i--){tmp[i]='!'+acc%85;acc/=85;}
+            for(int i=0;i<cnt+1;i++) out+=tmp[i];
+        }
+        result="<~"+out+"~>";
+    } else if(type=="base62"){
+        const std::string chars="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        // Converti stringa come numero grande in base62
+        std::vector<int> digits={0};
+        for(uint8_t b:input){
+            int carry=b;
+            for(int& d:digits){carry+=d*256;d=carry%62;carry/=62;}
+            while(carry){digits.push_back(carry%62);carry/=62;}
+        }
+        for(auto it=digits.rbegin();it!=digits.rend();++it) result+=chars[*it];
+    } else { std::cout<<Color::RED<<"  Tipo non riconosciuto.\n\n"<<Color::RESET;return; }
+
+    std::cout<<Color::YELLOW<<"  Output: "<<Color::GREEN<<result<<Color::RESET<<"\n\n";
+}
+
+// ── rot47 — ROT47 su tutti i caratteri stampabili
+void cmdRot47(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: rot47 <testo>\n"<<Color::RESET;return;}
+    std::string input; for(size_t i=1;i<args.size();i++){if(i>1)input+=' ';input+=args[i];}
+    std::string out;
+    for(char c:input){
+        if(c>=33&&c<=126) out=(char)(33+((c-33+47)%94));
+        else out+=c;
+        // Fix: was appending wrong
+    }
+    // Redo properly
+    out.clear();
+    for(char c:input){
+        if(c>=33&&c<=126) out+=(char)(33+((c-33+47)%94));
+        else out+=c;
+    }
+    std::cout<<Color::CYAN<<"\n  ROT47\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  Input : "<<Color::WHITE<<input<<"\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  Output: "<<Color::GREEN<<out<<Color::RESET<<"\n\n";
+}
+
+// ── atbash avanzato + altri cifrari
+void cmdCipherExtra(const std::vector<std::string>& args) {
+    if(args.size()<3){
+        std::cout<<Color::YELLOW<<"Uso: cipherx <tipo> <testo>\n"
+                 <<"  Tipi: rail2 rail3 columnar beaufort bacon\n"<<Color::RESET;return;
+    }
+    std::string type=toLower(args[1]),text;
+    for(size_t i=2;i<args.size();i++){if(i>2)text+=' ';text+=args[i];}
+    std::cout<<Color::CYAN<<"\n  CIPHER ["<<type<<"]\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  Input : "<<Color::WHITE<<text<<"\n"<<Color::RESET;
+
+    if(type=="rail2"||type=="rail3"){
+        int rails=(type=="rail2")?2:3;
+        std::vector<std::string> fence(rails);
+        int rail=0,dir=1;
+        for(char c:text){
+            fence[rail]+=c;
+            if(rail==rails-1) dir=-1;
+            if(rail==0) dir=1;
+            rail+=dir;
+        }
+        std::string out;
+        for(auto& r:fence) out+=r;
+        std::cout<<Color::YELLOW<<"  Rail-"<<rails<<" : "<<Color::GREEN<<out<<Color::RESET<<"\n";
+    }
+    else if(type=="bacon"){
+        // Cifrario di Bacone A=AAAAA B=AAAAB ...
+        std::map<char,std::string> bacon;
+        std::string letters="abcdefghiklmnopqrstuwxyz"; // i=j, v=u nel classico
+        for(size_t i=0;i<letters.size();i++){
+            std::string code;
+            int n=i;
+            for(int b=4;b>=0;b--) code+=(n&(1<<b))?'B':'A';
+            bacon[letters[i]]=code;
+        }
+        std::string out;
+        for(char c:text){
+            char lc=tolower(c);
+            if(bacon.count(lc)) out+=bacon[lc]+" ";
+            else out+=c;
+        }
+        std::cout<<Color::YELLOW<<"  Bacon : "<<Color::GREEN<<out<<Color::RESET<<"\n";
+    }
+    else if(type=="beaufort"){
+        std::cout<<Color::DIM<<"  Beaufort: cifrario simile a Vigenere ma con decifrazione = cifratura\n"<<Color::RESET;
+        std::cout<<Color::DIM<<"  Usa: cipher vigenere <key> <testo> — stesso algoritmo\n\n"<<Color::RESET;
+        return;
+    }
+    std::cout<<"\n";
+}
+
+// ── crc avanzato (CRC16, CRC64)
+void cmdCrcExtra(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: crcx <file>\n"<<Color::RESET;return;}
+    std::ifstream f(args[1],std::ios::binary);
+    if(!f){std::cout<<Color::RED<<"  File non trovato.\n"<<Color::RESET;return;}
+    std::vector<uint8_t> data; char c; while(f.get(c)) data.push_back((uint8_t)c);
+
+    // CRC16
+    uint16_t crc16=0xFFFF;
+    for(uint8_t b:data){crc16^=b;for(int i=0;i<8;i++) crc16=(crc16&1)?(crc16>>1)^0xA001:(crc16>>1);}
+
+    // CRC32 (già implementato altrove, ma rifacciamo)
+    uint32_t crc32=0xFFFFFFFF;
+    for(uint8_t b:data){
+        crc32^=b;
+        for(int i=0;i<8;i++) crc32=(crc32&1)?(crc32>>1)^0xEDB88320:(crc32>>1);
+    }
+    crc32^=0xFFFFFFFF;
+
+    // FNV-1a 64bit
+    uint64_t fnv=14695981039346656037ULL;
+    for(uint8_t b:data){fnv^=b;fnv*=1099511628211ULL;}
+
+    std::cout<<Color::CYAN<<"\n  CRC AVANZATO: "<<args[1]<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(50,'-')<<"\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  CRC-16   : "<<Color::GREEN<<std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<crc16<<Color::RESET<<"\n";
+    std::cout<<Color::YELLOW<<"  CRC-32   : "<<Color::GREEN<<std::setw(8)<<std::setfill('0')<<crc32<<Color::RESET<<"\n";
+    std::cout<<Color::YELLOW<<"  FNV-1a64 : "<<Color::GREEN<<std::setw(16)<<std::setfill('0')<<fnv<<Color::RESET<<"\n";
+    std::cout<<std::dec<<"\n";
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RETE & OSINT AVANZATO
+// ═══════════════════════════════════════════════════════════════
+
+// ── httpclient — HTTP client completo GET/POST
+void cmdHttpClient(const std::vector<std::string>& args) {
+    if(args.size()<2){
+        std::cout<<Color::YELLOW<<"Uso: http <url> [--method GET|POST] [--data <body>] [--header <k:v>]\n"<<Color::RESET;return;
+    }
+    std::string url=args[1],method="GET",body,extraHeaders;
+    for(size_t i=2;i<args.size();i++){
+        if(args[i]=="--method"&&i+1<args.size()) method=args[++i];
+        if(args[i]=="--data"&&i+1<args.size()) body=args[++i];
+        if(args[i]=="--header"&&i+1<args.size()) extraHeaders+="-H '"+args[++i]+"' ";
+    }
+
+    std::cout<<Color::CYAN<<"\n  HTTP CLIENT: "<<method<<" "<<url<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(60,'-')<<"\n"<<Color::RESET;
+
+    std::string cmd="curl -s -i --max-time 10 -X "+method+" "+extraHeaders;
+    if(!body.empty()) cmd+="-d '"+body+"' ";
+    cmd+="'"+url+"' 2>&1";
+
+    FILE* p=popen(cmd.c_str(),"r");
+    if(!p){std::cout<<Color::RED<<"  curl non disponibile.\n"<<Color::RESET;return;}
+    char buf[512]; bool inHeaders=true; int lineNum=0;
+    while(fgets(buf,sizeof(buf),p)){
+        std::string l(buf); lineNum++;
+        if(l=="\r\n"||l=="\n") { inHeaders=false; std::cout<<Color::DIM<<"  ---\n"<<Color::RESET; continue; }
+        if(inHeaders){
+            if(lineNum==1) std::cout<<(l.find("200")!=std::string::npos?Color::BGREEN:Color::BRED)<<"  "<<l<<Color::RESET;
+            else {
+                auto colon=l.find(':');
+                if(colon!=std::string::npos){
+                    std::string key=trim(l.substr(0,colon));
+                    std::string val=trim(l.substr(colon+1));
+                    std::cout<<Color::YELLOW<<"  "<<std::left<<std::setw(24)<<key<<Color::WHITE<<val<<Color::RESET<<"\n";
+                }
+            }
+        } else {
+            std::cout<<Color::WHITE<<"  "<<l<<Color::RESET;
+        }
+    }
+    pclose(p);
+    std::cout<<"\n";
+}
+
+// ── iprange — analisi range IP / CIDR avanzato
+void cmdIpRange(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: iprange <ip/cidr>\n       Es: iprange 192.168.1.0/24\n"<<Color::RESET;return;}
+    std::string cidr=args[1];
+    auto slash=cidr.find('/');
+    if(slash==std::string::npos){std::cout<<Color::RED<<"  Formato: ip/prefix (es. 192.168.1.0/24)\n"<<Color::RESET;return;}
+
+    std::string ipStr=cidr.substr(0,slash);
+    int prefix=std::stoi(cidr.substr(slash+1));
+    if(prefix<0||prefix>32){std::cout<<Color::RED<<"  Prefisso non valido (0-32)\n"<<Color::RESET;return;}
+
+    uint32_t ip=0;
+    int a,b,c,d; sscanf(ipStr.c_str(),"%d.%d.%d.%d",&a,&b,&c,&d);
+    ip=((uint32_t)a<<24)|((uint32_t)b<<16)|((uint32_t)c<<8)|d;
+
+    uint32_t mask=(prefix==0)?0:((~0u)<<(32-prefix));
+    uint32_t network=ip&mask;
+    uint32_t broadcast=network|(~mask);
+    uint32_t firstHost=network+1;
+    uint32_t lastHost=broadcast-1;
+    uint64_t hosts=(prefix>=31)?((uint64_t)1<<(32-prefix)):(uint64_t)(broadcast-network-1);
+
+    auto ipToStr=[](uint32_t ip)->std::string{
+        return std::to_string((ip>>24)&0xFF)+"."+std::to_string((ip>>16)&0xFF)+"."+
+               std::to_string((ip>>8)&0xFF)+"."+std::to_string(ip&0xFF);
+    };
+
+    std::cout<<Color::CYAN<<"\n  IP RANGE: "<<cidr<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(45,'-')<<"\n"<<Color::RESET;
+    std::cout<<Color::YELLOW<<"  Network    : "<<Color::WHITE<<ipToStr(network)<<"\n";
+    std::cout<<Color::YELLOW<<"  Broadcast  : "<<Color::WHITE<<ipToStr(broadcast)<<"\n";
+    std::cout<<Color::YELLOW<<"  Primo host : "<<Color::GREEN<<ipToStr(firstHost)<<"\n";
+    std::cout<<Color::YELLOW<<"  Ultimo host: "<<Color::GREEN<<ipToStr(lastHost)<<"\n";
+    std::cout<<Color::YELLOW<<"  Host utili : "<<Color::WHITE<<hosts<<"\n";
+    std::cout<<Color::YELLOW<<"  Netmask    : "<<Color::WHITE<<ipToStr(mask)<<"\n";
+    std::cout<<Color::YELLOW<<"  Wildcard   : "<<Color::WHITE<<ipToStr(~mask)<<"\n";
+    std::cout<<Color::YELLOW<<"  Classe     : "<<Color::WHITE;
+    if(a<128) std::cout<<"A"; else if(a<192) std::cout<<"B"; else if(a<224) std::cout<<"C";
+    else if(a<240) std::cout<<"D (multicast)"; else std::cout<<"E (riservata)";
+    // Privato?
+    bool priv=(a==10)||(a==172&&b>=16&&b<=31)||(a==192&&b==168);
+    std::cout<<(priv?" [PRIVATA]":"")<<Color::RESET<<"\n\n";
+}
+
+// ── osint — raccolta info OSINT su dominio/ip
+void cmdOsint(const std::vector<std::string>& args) {
+    if(args.size()<2){std::cout<<Color::YELLOW<<"Uso: osint <dominio|ip>\n"<<Color::RESET;return;}
+    std::string target=args[1];
+
+    std::cout<<Color::CYAN<<"\n  OSINT RECON: "<<Color::WHITE<<target<<"\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(60,'-')<<"\n"<<Color::RESET;
+
+    // 1. DNS
+    std::cout<<Color::YELLOW<<"  [1] DNS RECORDS:\n"<<Color::RESET;
+    for(auto& type:{"A","MX","NS","TXT"}){
+        FILE* p=popen(("dig +short "+std::string(type)+" "+target+" 2>/dev/null").c_str(),"r");
+        if(p){char buf[512];std::string out;while(fgets(buf,sizeof(buf),p))out+=buf;pclose(p);
+            out=trim(out);
+            if(!out.empty()) std::cout<<Color::DIM<<"  "<<std::left<<std::setw(6)<<type<<Color::WHITE<<out.substr(0,80)<<Color::RESET<<"\n";}
+    }
+
+    // 2. WHOIS rapido
+    std::cout<<Color::YELLOW<<"\n  [2] WHOIS (info principali):\n"<<Color::RESET;
+    FILE* w=popen(("whois "+target+" 2>/dev/null | grep -iE 'registrar:|country:|creation date:|expiry|name server' | head -8").c_str(),"r");
+    if(w){char buf[256];while(fgets(buf,sizeof(buf),w)) std::cout<<Color::WHITE<<"  "<<buf<<Color::RESET;pclose(w);}
+
+    // 3. GeoIP
+    std::cout<<Color::YELLOW<<"\n  [3] GEOIP:\n"<<Color::RESET;
+    FILE* g=popen(("curl -s --max-time 5 'https://ipinfo.io/"+target+"/json' 2>/dev/null | grep -E 'ip|city|country|org' | head -6").c_str(),"r");
+    if(g){char buf[256];while(fgets(buf,sizeof(buf),g)) std::cout<<Color::WHITE<<"  "<<buf<<Color::RESET;pclose(g);}
+
+    // 4. Headers HTTP
+    std::cout<<Color::YELLOW<<"\n  [4] HTTP HEADERS:\n"<<Color::RESET;
+    FILE* h=popen(("curl -sI --max-time 5 http://"+target+" 2>/dev/null | head -10").c_str(),"r");
+    if(h){char buf[256];bool first=true;while(fgets(buf,sizeof(buf),h)){
+        std::string l(buf);
+        if(first){std::cout<<(l.find("200")!=std::string::npos?Color::BGREEN:Color::YELLOW)<<"  "<<l<<Color::RESET;first=false;}
+        else std::cout<<Color::DIM<<"  "<<l<<Color::RESET;}pclose(h);}
+
+    // 5. Sottodomini comuni
+    std::cout<<Color::YELLOW<<"\n  [5] SOTTODOMINI:\n"<<Color::RESET;
+    std::vector<std::string> subs={"www","mail","ftp","api","dev","admin","vpn","test","staging"};
+    for(auto& s:subs){
+        std::string full=s+"."+target;
+        struct addrinfo hints{},*res=nullptr;
+        hints.ai_family=AF_UNSPEC;hints.ai_socktype=SOCK_STREAM;
+        if(getaddrinfo(full.c_str(),nullptr,&hints,&res)==0){
+            char ip[INET6_ADDRSTRLEN]={0};
+            if(res->ai_family==AF_INET) inet_ntop(AF_INET,&((struct sockaddr_in*)res->ai_addr)->sin_addr,ip,sizeof(ip));
+            std::cout<<Color::BGREEN<<"  [+] "<<Color::WHITE<<std::left<<std::setw(30)<<full<<Color::GREEN<<ip<<Color::RESET<<"\n";
+            freeaddrinfo(res);
+        }
+    }
+    std::cout<<"\n";
+}
+
+// ── portscan veloce con banner grab
+void cmdPortScanFull(const std::vector<std::string>& args) {
+    if(args.size()<2){
+        std::cout<<Color::YELLOW<<"Uso: pscan <host> [--top] [--full] [--range start-end]\n"
+                 <<"  --top   : prime 100 porte comuni\n"
+                 <<"  --full  : porte 1-1024\n"
+                 <<"  --range : range personalizzato\n"<<Color::RESET;return;
+    }
+    std::string host=args[1];
+    std::vector<int> ports;
+
+    std::map<int,std::string> services={
+        {21,"FTP"},{22,"SSH"},{23,"Telnet"},{25,"SMTP"},{53,"DNS"},{80,"HTTP"},
+        {110,"POP3"},{143,"IMAP"},{443,"HTTPS"},{445,"SMB"},{3306,"MySQL"},
+        {3389,"RDP"},{5432,"PostgreSQL"},{6379,"Redis"},{8080,"HTTP-Alt"},
+        {8443,"HTTPS-Alt"},{27017,"MongoDB"},{9200,"Elasticsearch"},{5601,"Kibana"},
+        {11211,"Memcached"},{6443,"K8s API"},{2375,"Docker"},{2049,"NFS"},
+        {161,"SNMP"},{389,"LDAP"},{636,"LDAPS"},{1433,"MSSQL"},{1521,"Oracle"},
+        {5900,"VNC"},{4444,"Metasploit"},{9001,"Tor"},{2222,"SSH-alt"},
+    };
+
+    bool doFull=false,doTop=false;
+    int rangeStart=-1,rangeEnd=-1;
+    for(size_t i=2;i<args.size();i++){
+        if(args[i]=="--full") doFull=true;
+        if(args[i]=="--top")  doTop=true;
+        if(args[i]=="--range"&&i+1<args.size()){
+            std::string r=args[++i];
+            auto dash=r.find('-');
+            if(dash!=std::string::npos){rangeStart=std::stoi(r.substr(0,dash));rangeEnd=std::stoi(r.substr(dash+1));}
+        }
+    }
+
+    if(doFull) for(int p=1;p<=1024;p++) ports.push_back(p);
+    else if(rangeStart>0) for(int p=rangeStart;p<=rangeEnd&&p<=65535;p++) ports.push_back(p);
+    else { // top ports
+        for(auto& p:services) ports.push_back(p.first);
+        std::sort(ports.begin(),ports.end());
+    }
+
+    std::cout<<Color::CYAN<<"\n  PORT SCAN: "<<host<<Color::DIM<<" ("<<ports.size()<<" porte)\n"<<Color::RESET;
+    std::cout<<Color::DIM<<"  "<<std::string(55,'-')<<"\n"<<Color::RESET;
+
+    int found=0;
+    for(int port:ports){
+        struct addrinfo hints{},*res=nullptr;
+        hints.ai_family=AF_UNSPEC;hints.ai_socktype=SOCK_STREAM;
+        std::string ps=std::to_string(port);
+        if(getaddrinfo(host.c_str(),ps.c_str(),&hints,&res)!=0) continue;
+        int sock=socket(res->ai_family,res->ai_socktype,res->ai_protocol);
+        if(sock<0){freeaddrinfo(res);continue;}
+        struct timeval tv{1,0};
+        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
+        setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+        bool open=(connect(sock,res->ai_addr,res->ai_addrlen)==0);
+        if(open){
+            found++;
+            std::string svc=services.count(port)?services[port]:"unknown";
+            // Grab banner
+            std::string banner;
+            char buf[256]={0};
+            ssize_t n=recv(sock,buf,sizeof(buf)-1,0);
+            if(n>0){banner=std::string(buf,std::min((ssize_t)50,n));
+                    for(char& c:banner) if(c<32||c>126) c='.';}
+            std::cout<<Color::BGREEN<<"  OPEN "<<Color::WHITE<<std::setw(6)<<port
+                     <<Color::CYAN<<"  "<<std::left<<std::setw(14)<<svc
+                     <<Color::DIM<<(banner.empty()?"":banner)<<Color::RESET<<"\n";
+        }
+        close(sock);freeaddrinfo(res);
+    }
+    if(found==0) std::cout<<Color::DIM<<"  Nessuna porta aperta trovata.\n"<<Color::RESET;
+    else std::cout<<Color::YELLOW<<"\n  Porte aperte: "<<found<<Color::RESET<<"\n";
+    std::cout<<"\n";
+}
+
 void cmdUpdate(const std::vector<std::string>& args) {
     std::cout << Color::CYAN << "\n  NEXUS UPDATE\n" << Color::RESET;
     std::cout << Color::DIM << "  " << std::string(50,'-') << "\n" << Color::RESET;
@@ -6681,6 +7361,18 @@ int main() {
                 }
                 runShellCmd(fullcmd);
             }
+            else if (cmd == "pdfinfo")    { cmdPdfInfo(tokens); }
+            else if (cmd == "zipinfo")    { cmdZipInfo(tokens); }
+            else if (cmd == "docinfo")    { cmdDocInfo(tokens); }
+            else if (cmd == "strings2")   { cmdStrings2(tokens); }
+            else if (cmd == "baseenc")    { cmdBaseEncode(tokens); }
+            else if (cmd == "rot47")      { cmdRot47(tokens); }
+            else if (cmd == "cipherx")    { cmdCipherExtra(tokens); }
+            else if (cmd == "crcx")       { cmdCrcExtra(tokens); }
+            else if (cmd == "http")       { cmdHttpClient(tokens); }
+            else if (cmd == "iprange")    { cmdIpRange(tokens); }
+            else if (cmd == "osint")      { cmdOsint(tokens); }
+            else if (cmd == "pscan")      { cmdPortScanFull(tokens); }
             else if (cmd == "update")     { cmdUpdate(tokens); }
             else if (cmd == "filetree")   { cmdFileTree(tokens); }
             else if (cmd == "duplicates") { cmdDuplicates(tokens); }
